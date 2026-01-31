@@ -1,0 +1,6 @@
+
+lod_count = 1
+use_mikktspace = true
+force_recompute_normals = true
+force_recompute_tangents = true
+lod0_distance = 10000.000000

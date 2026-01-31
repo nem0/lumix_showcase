@@ -1,0 +1,6 @@
+type = patch9
+top = 8
+bottom = 8
+left = 8
+right = 8
+texture = "ui/PNG/button_square_depth_gloss.png"

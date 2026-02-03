@@ -438,11 +438,6 @@ function start()
             gui_image = {
                 sprite = "ui/button_rectangle_border.spr"
             },
-            gui_text = {
-                text = tostring(idx),
-                font_size = 20,
-                font = "ui/font/Kenney Future.ttf"
-            },
             lua_script = {}
         })
         button.parent = canvas
@@ -581,26 +576,31 @@ function start()
         path_index[tile.x .. "," .. tile.z] = i
     end
 
+    local tiles_group = this.world:createEntityEx({})
+    tiles_group.name = "tiles_group"
+
     -- Create grid map
-    for x = 0, GRID_WIDTH + 1 do
-        for z = 0, GRID_HEIGHT + 1 do
+    for x = 1 - 15, GRID_WIDTH + 15 do
+        for z = 1 - 15, GRID_HEIGHT + 15 do
             local pos = {(x - GRID_WIDTH / 2) * TILE_SPACING, 0, (z - GRID_HEIGHT / 2) * TILE_SPACING}
-            local model = "models/tile-hill.fbx"
+            local model = "models/tile.fbx"
             local rot = nil
+            local override_mat = "models/ground.mat"
+            local key = x .. "," .. z
             if x >= 1 and x <= GRID_WIDTH and z >= 1 and z <= GRID_HEIGHT then
-                local key = x .. "," .. z
                 if x == map_start.x and z == map_start.z then
                     model = "models/tile-spawn.fbx"
                     rot = start_rot
+                    override_mat = nil
                 elseif x == map_end.x and z == map_end.z then
                     model = "models/tile-spawn-end.fbx"
                     rot = end_rot
+                    override_mat = nil
                 elseif path_set[key] then
                     local idx = path_index[key]
                     model = path_models[idx]
                     rot = path_rotations[idx]
-                else
-                    model = "models/tile.fbx"
+                    override_mat = nil
                 end
             end
             local entity_params = {
@@ -610,14 +610,25 @@ function start()
             if rot then
                 entity_params.rotation = rot
             end
-            this.world:createEntityEx(entity_params)
+            local tile_entity = this.world:createEntityEx(entity_params)
+            tile_entity.parent = tiles_group
+            if override_mat ~= nil then
+                tile_entity.model_instance:setMaterialOverride(0, override_mat)
+            end
         end
     end
 
     -- Fill all non-path tiles with four trees each at scale 0.5
     local tree_models = {
-        "models/detail-tree.fbx",
-        "models/detail-tree-large.fbx",
+        --"models/detail-tree.fbx",
+        --"models/detail-tree-large.fbx",
+        "models/quaternius/PineTree_1.fbx",
+        "models/quaternius/PineTree_2.fbx",
+        "models/quaternius/PineTree_3.fbx",
+        "models/quaternius/PineTree_4.fbx",
+        "models/quaternius/PineTree_5.fbx",
+        "models/quaternius/Resource_PineTree.fbx",
+        "models/quaternius/BirchTree_Dead_4.fbx",
     }
     -- Offsets within a tile to place 4 models (corners)
     local half_offset = 0.25 * TILE_SPACING
@@ -627,10 +638,11 @@ function start()
         {half_offset, -half_offset},
         {half_offset, half_offset},
     }
-    for x = 1, GRID_WIDTH do
-        for z = 1, GRID_HEIGHT do
+    for x = 1 - 15, GRID_WIDTH + 15 do
+        for z = 1 - 15, GRID_HEIGHT + 15 do
             local key = x .. "," .. z
-            if not path_set[key] then
+            local is_path = x >= 1 and x <= GRID_WIDTH and z >= 1 and z <= GRID_HEIGHT and path_set[key]
+            if not is_path then
                 -- Only populate this tile with trees based on probability
                 if math.random() < TREE_PROBABILITY then
                     if not trees[x] then trees[x] = {} end
@@ -644,7 +656,7 @@ function start()
                         local jitter_x = (math.random() * 2 - 1) * TREE_JITTER * TILE_SPACING
                         local jitter_z = (math.random() * 2 - 1) * TREE_JITTER * TILE_SPACING
                         local pos = {center_x + base_off_x + jitter_x, TREE_OFFSET_Y, center_z + base_off_z + jitter_z}
-                        local tree_scale = 0.5 + math.random() * 0.4  -- Random scale between 0.5 and 0.9
+                        local tree_scale = 0.7 + math.random() * 0.4  -- Random scale between 0.5 and 0.9
                         local tree_angle = math.random() * 2 * math.pi  -- Random rotation
                         local half_angle = tree_angle / 2
                         local tree_rot = {0, math.sin(half_angle), 0, math.cos(half_angle)}
@@ -654,6 +666,7 @@ function start()
                             scale = {tree_scale, tree_scale, tree_scale},
                             model_instance = {source = tree_models[math.random(1, #tree_models)]}
                         })
+                        tree.parent = tiles_group
                         table.insert(trees[x][z], tree)
                     end
                 end
@@ -662,10 +675,11 @@ function start()
     end
 
     -- Scatter rocks on non-path tiles
-    for x = 1, GRID_WIDTH do
-        for z = 1, GRID_HEIGHT do
+    for x = 1 - 15, GRID_WIDTH + 15 do
+        for z = 1 - 15, GRID_HEIGHT + 15 do
             local key = x .. "," .. z
-            if not path_set[key] then
+            local is_path = x >= 1 and x <= GRID_WIDTH and z >= 1 and z <= GRID_HEIGHT and path_set[key]
+            if not is_path then
                 -- Place a rock with some probability
                 if math.random() < ROCK_PROBABILITY then
                     if not rocks[x] then rocks[x] = {} end
@@ -689,6 +703,7 @@ function start()
                         scale = {rock_scale, rock_scale, rock_scale},
                         model_instance = {source = rock_models[math.random(1, #rock_models)]}
                     })
+                    rock.parent = tiles_group
                     table.insert(rocks[x][z], rock)
                 end
             end
@@ -969,18 +984,14 @@ function update(dt)
                     -- Snap to grid
                     local grid_x = math.floor((pos[1] / TILE_SPACING) + GRID_WIDTH / 2 + 0.5)
                     local grid_z = math.floor((pos[3] / TILE_SPACING) + GRID_HEIGHT / 2 + 0.5)
-                    if grid_x >= 1 and grid_x <= GRID_WIDTH and grid_z >= 1 and grid_z <= GRID_HEIGHT then
-                        local snapped_pos = {
-                            (grid_x - GRID_WIDTH / 2) * TILE_SPACING,
-                            TOWER_OFFSET_Y,
-                            (grid_z - GRID_HEIGHT / 2) * TILE_SPACING
-                        }
-                        placeholder_tower.position = snapped_pos
-                        if left_click and isTilePlaceable(grid_x, grid_z) then
-                            placeTower(grid_x, grid_z, selected_type)
-                        end
-                    else
-                        placeholder_tower.position = {0, -100, 0}
+                    local snapped_pos = {
+                        (grid_x - GRID_WIDTH / 2) * TILE_SPACING,
+                        TOWER_OFFSET_Y,
+                        (grid_z - GRID_HEIGHT / 2) * TILE_SPACING
+                    }
+                    placeholder_tower.position = snapped_pos
+                    if left_click and isTilePlaceable(grid_x, grid_z) then
+                        placeTower(grid_x, grid_z, selected_type)
                     end
                 else
                     placeholder_tower.position = {0, -100, 0}
@@ -1047,7 +1058,7 @@ function onInputEvent(event)
 end
 
 function isTilePlaceable(x, z)
-    if x < 1 or x > GRID_WIDTH or z < 1 or z > GRID_HEIGHT then return false end
+    if x < 1 - 15 or x > GRID_WIDTH + 15 or z < 1 - 15 or z > GRID_HEIGHT + 15 then return false end
     local key = x .. "," .. z
     if path_set and path_set[key] then return false end
     return true

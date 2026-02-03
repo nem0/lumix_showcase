@@ -2,12 +2,14 @@
 -- Simple Tower Defense Game Script for Lumix Engine
 
 -- TODO
+-- beautify
 -- upgrading towers
--- UI
--- fix river crossings
+-- UI (main menu, ...)
 -- particles
+-- music
 
-local GRID_SIZE = 20  -- Size of the grid, tweakable for larger/smaller maps
+local GRID_WIDTH = 30  -- Width of the grid
+local GRID_HEIGHT = 20  -- Height of the grid
 local TILE_SPACING = 1
 local BULLET_SCALE = 2.0  -- Adjust bullet size
 local PROJECTILE_OFFSET_Y = 1.0  -- Height above terrain for projectiles
@@ -16,9 +18,16 @@ local AIM_TOLERANCE = 0.1  -- Radians tolerance for aiming before firing
 local TREE_OFFSET_Y = 0.15  -- Adjust this to position trees above terrain
 local TREE_PROBABILITY = 0.7 -- Chance (0..1) to populate a non-path tile with trees
 local TREE_JITTER = 0.4 -- Max random additional offset as fraction of TILE_SPACING
-local TREES_PER_TILE = 8 -- Number of tree models to place on a populated tile
+local TREES_PER_TILE = 16 -- Number of tree models to place on a populated tile
+local ROCK_OFFSET_Y = 0.15  -- Adjust this to position rocks above terrain
+local ROCK_PROBABILITY = 0.3 -- Chance (0..1) to place a rock on a tile
+local ROCK_JITTER = 0.3 -- Max random additional offset as fraction of TILE_SPACING
+local ROCK_SCALE_MIN = 0.3
+local ROCK_SCALE_MAX = 1.0
 local TOWER_OFFSET_Y = 0.15  -- Adjust this to position towers above terrain
 local WEAPON_OFFSET_Y = 0.75  -- Adjust this to position weapons above towers
+local NUM_WAYPOINTS = 5  -- Number of waypoints for the enemy path
+local MAX_WAYPOINT_DISTANCE = 8  -- Maximum grid units between consecutive points (start, waypoints, end)
 
 local spawn_timer = 0
 local current_wave = 1
@@ -36,22 +45,23 @@ local projectiles_data = {}
 local end_pos = {15, 0, 0}
 local grid_passable = {}
 local path_tiles = {}
-local river_tiles = {}
 local map_start = {}
 local map_end = {}
+local waypoints = {}
 local trees = {}
+local rocks = {}
 camera = Lumix.Entity.NULL -- set from property grid
 local placeholder_tower = nil
 local mouse_x = 0.5
 local mouse_y = 0.5
 local path_set = {}
-local river_set = {}
 local left_click = false
 selected_type = 1
 old_selected_type = 1
 local score = 400
 local score_text = nil
 local wave_text = nil
+local countdown_text = nil
 local pulsate_time = 0
 local tower_types = {
     {
@@ -108,25 +118,25 @@ local enemy_types = {
         model = "models/enemy-ufo-a.fbx",
         speed = 2.0,
         hp = 100,
-        scale = 0.5
+        scale = 0.7
     },
     {
         model = "models/enemy-ufo-b.fbx",
         speed = 2.5,
         hp = 80,
-        scale = 0.5
+        scale = 0.7
     },
     {
         model = "models/enemy-ufo-c.fbx",
         speed = 1.5,
         hp = 150,
-        scale = 0.5
+        scale = 0.7
     },
     {
         model = "models/enemy-ufo-d.fbx",
         speed = 2.2,
         hp = 120,
-        scale = 0.5
+        scale = 0.7
     }
 }
 local waves = {
@@ -169,9 +179,9 @@ local function find_path(start, goal)
     local queue = {}
     local visited = {}
     local parent = {}
-    for x = 1, GRID_SIZE do
+    for x = 1, GRID_WIDTH do
         visited[x] = {}
-        for z = 1, GRID_SIZE do
+        for z = 1, GRID_HEIGHT do
             visited[x][z] = false
         end
     end
@@ -189,7 +199,7 @@ local function find_path(start, goal)
         for _, d in ipairs(dirs) do
             local nx = current.x + d[1]
             local nz = current.z + d[2]
-            if nx >= 1 and nx <= GRID_SIZE and nz >= 1 and nz <= GRID_SIZE and grid_passable[nx][nz] and not visited[nx][nz] then
+            if nx >= 1 and nx <= GRID_WIDTH and nz >= 1 and nz <= GRID_HEIGHT and grid_passable[nx][nz] and not visited[nx][nz] then
                 visited[nx][nz] = true
                 queue[#queue + 1] = {x = nx, z = nz}
                 parent[nx .. "," .. nz] = current
@@ -207,87 +217,138 @@ local function find_path(start, goal)
     return path
 end
 
+
+
 local function generateMap()
     -- Reset passable
-    for x = 1, GRID_SIZE do
-        for z = 1, GRID_SIZE do
+    for x = 1, GRID_WIDTH do
+        for z = 1, GRID_HEIGHT do
             grid_passable[x][z] = true
         end
     end
 
     -- Add random obstacles to create more turns in the path
-    for x = 1, GRID_SIZE do
-        for z = 1, GRID_SIZE do
-            if math.random() < 0.3 then  -- 30% chance to be impassable
-                grid_passable[x][z] = false
+    for x = 1, GRID_WIDTH do
+        for z = 1, GRID_HEIGHT do
+            if math.random() < -0.1 then  -- 10% chance to place an obstacle cluster
+                local size = math.random(2, 4)
+                for dx = 0, size - 1 do
+                    for dz = 0, size - 1 do
+                        local nx = x + dx
+                        local nz = z + dz
+                        if nx <= GRID_WIDTH and nz <= GRID_HEIGHT then
+                            grid_passable[nx][nz] = false
+                        end
+                    end
+                end
             end
         end
     end
 
     -- Random start and end on edges
-    map_start = {x = 1, z = math.random(1, GRID_SIZE)}
-    map_end = {x = GRID_SIZE, z = math.random(1, GRID_SIZE)}
+    map_start = {x = 1, z = math.random(1, GRID_HEIGHT)}
+    map_end = {x = GRID_WIDTH, z = math.random(1, GRID_HEIGHT)}
 
     -- Ensure start and end passable
     grid_passable[map_start.x][map_start.z] = true
     grid_passable[map_end.x][map_end.z] = true
 
-    -- Find path
-    local path = find_path(map_start, map_end)
-    if not path then
-        -- Retry
-        return generateMap()
-    end
-
-    -- Set path_tiles
-    path_tiles = path
-
-    -- Identify corner tiles
-    local corner_set = {}
-    for i = 2, #path_tiles - 1 do
-        local dir1 = get_dir(path_tiles[i-1], path_tiles[i])
-        local dir2 = get_dir(path_tiles[i], path_tiles[i+1])
-        if dir1 ~= dir2 then
-            corner_set[path_tiles[i].x .. "," .. path_tiles[i].z] = true
-        end
-    end
-
-    local temp_path_set = {}
-    for _, tile in ipairs(path_tiles) do
-        temp_path_set[tile.x .. "," .. tile.z] = true
-    end
-
-    -- Generate river
-    local river_start = {x = math.random(1, GRID_SIZE), z = 1}
-    local river_end = {x = math.random(1, GRID_SIZE), z = GRID_SIZE}
-    -- Ensure not same as enemy start/end
-    while (river_start.x == map_start.x and river_start.z == map_start.z) or (river_start.x == map_end.x and river_start.z == map_end.z) do
-        river_start.x = math.random(1, GRID_SIZE)
-    end
-    while (river_end.x == map_start.x and river_end.z == map_start.z) or (river_end.x == map_end.x and river_end.z == map_end.z) do
-        river_end.x = math.random(1, GRID_SIZE)
-    end
-    local river_path = find_path(river_start, river_end)
-    if river_path then
-        river_tiles = river_path
-        local river_set = {}
-        for _, tile in ipairs(river_tiles) do
-            river_set[tile.x .. "," .. tile.z] = true
-        end
-        local crossings = 0
-        local has_corner_crossing = false
-        for _, tile in ipairs(path_tiles) do
-            if river_set[tile.x .. "," .. tile.z] then
-                crossings = crossings + 1
-                if corner_set[tile.x .. "," .. tile.z] then
-                    has_corner_crossing = true
+    -- Generate waypoints
+    waypoints = {}
+    for i = 1, NUM_WAYPOINTS do
+        local point
+        local attempts = 0
+        while not point and attempts < 100 do
+            attempts = attempts + 1
+            local x, z
+            if i == 1 then
+                -- First waypoint must be within MAX_WAYPOINT_DISTANCE of spawn
+                local min_x = math.max(1, map_start.x - MAX_WAYPOINT_DISTANCE)
+                local max_x = math.min(GRID_WIDTH, map_start.x + MAX_WAYPOINT_DISTANCE)
+                local min_z = math.max(1, map_start.z - MAX_WAYPOINT_DISTANCE)
+                local max_z = math.min(GRID_HEIGHT, map_start.z + MAX_WAYPOINT_DISTANCE)
+                x = math.random(min_x, max_x)
+                z = math.random(min_z, max_z)
+            else
+                -- Subsequent waypoints must be within MAX_WAYPOINT_DISTANCE of the previous waypoint
+                local prev = waypoints[i-1]
+                local min_x = math.max(1, prev.x - MAX_WAYPOINT_DISTANCE)
+                local max_x = math.min(GRID_WIDTH, prev.x + MAX_WAYPOINT_DISTANCE)
+                local min_z = math.max(1, prev.z - MAX_WAYPOINT_DISTANCE)
+                local max_z = math.min(GRID_HEIGHT, prev.z + MAX_WAYPOINT_DISTANCE)
+                x = math.random(min_x, max_x)
+                z = math.random(min_z, max_z)
+            end
+            local valid = grid_passable[x][z]
+            -- Check not too close to start/end
+            if valid and (x ~= map_start.x or z ~= map_start.z) and (x ~= map_end.x or z ~= map_end.z) then
+                -- Check not adjacent to existing waypoints (must be more than 1 unit apart in both x and z)
+                local too_close = false
+                for _, wp in ipairs(waypoints) do
+                    if math.abs(wp.x - x) <= 1 or math.abs(wp.z - z) <= 1 then
+                        too_close = true
+                        break
+                    end
+                end
+                if not too_close then
+                    point = {x = x, z = z}
                 end
             end
         end
-        if crossings > 1 or has_corner_crossing then
+        if not point then
+            -- Fallback: place randomly without distance checks
+            local x = math.random(1, GRID_WIDTH)
+            local z = math.random(1, GRID_HEIGHT)
+            if grid_passable[x][z] then
+                point = {x = x, z = z}
+            end
+        end
+        if point then
+            table.insert(waypoints, point)
+        else
+            -- If we can't find a point, regenerate the map
             return generateMap()
         end
     end
+
+    -- Find paths between waypoints
+    local all_paths = {}
+    local current_start = map_start
+    for i, waypoint in ipairs(waypoints) do
+        local path = find_path(current_start, waypoint)
+        if not path then
+            return generateMap()
+        end
+        table.insert(all_paths, path)
+        -- Block intermediate tiles
+        for j = 2, #path - 1 do
+            grid_passable[path[j].x][path[j].z] = false
+        end
+        current_start = waypoint
+    end
+    -- Block start and end
+    grid_passable[map_start.x][map_start.z] = false
+    grid_passable[map_end.x][map_end.z] = false
+    -- Final path to end
+    grid_passable[map_end.x][map_end.z] = true
+    local final_path = find_path(current_start, map_end)
+    if not final_path then
+        return generateMap()
+    end
+    table.insert(all_paths, final_path)
+
+    -- Combine all paths
+    local combined = {}
+    for _, path in ipairs(all_paths) do
+        for i, tile in ipairs(path) do
+            if #combined == 0 or i > 1 then
+                table.insert(combined, tile)
+            end
+        end
+    end
+
+    -- Set path_tiles
+    path_tiles = combined
 end
 
 function start()
@@ -317,6 +378,15 @@ function start()
     })
     wave_text.parent = canvas
     wave_text.gui_text.font = "ui/font/Kenney Future.ttf"
+
+    -- Create countdown text
+    countdown_text = this.world:createEntityEx({
+        gui_text = {text = "", font_size = 40, horizontal_align = LumixAPI.TextHAlign.CENTER, vertical_align = LumixAPI.TextVAlign.MIDDLE},
+        gui_rect = {left_relative = 0.5, left_points = -200, right_relative = 0.5, right_points = 200, top_relative = 0.5, top_points = -50, bottom_relative = 0.5, bottom_points = 10},
+        gui_image = {}
+    })
+    countdown_text.parent = canvas
+    countdown_text.gui_text.font = "ui/font/Kenney Future.ttf"
 
     -- Create start wave early button
     local start_wave_button = this.world:createEntityEx({
@@ -413,9 +483,9 @@ function start()
     end
     
     -- Initialize passable grid
-    for x = 1, GRID_SIZE do
+    for x = 1, GRID_WIDTH do
         grid_passable[x] = {}
-        for z = 1, GRID_SIZE do
+        for z = 1, GRID_HEIGHT do
             grid_passable[x][z] = true
         end
     end
@@ -423,14 +493,20 @@ function start()
     -- Generate random map
     generateMap()
 
-    -- Set path and river sets for placement check
+    -- Set path set for placement check
     path_set = {}
     for _, tile in ipairs(path_tiles) do
         path_set[tile.x .. "," .. tile.z] = true
     end
-    river_set = {}
-    for _, tile in ipairs(river_tiles) do
-        river_set[tile.x .. "," .. tile.z] = true
+
+    -- Create waypoint models
+    for i, waypoint in ipairs(waypoints) do
+        local waypoint_pos = {(waypoint.x - GRID_WIDTH / 2) * TILE_SPACING, TOWER_OFFSET_Y, (waypoint.z - GRID_HEIGHT / 2) * TILE_SPACING}
+        local model = (i % 2 == 1) and "models/snow-wood-structure-high.fbx" or "models/snow-wood-structure.fbx"
+        this.world:createEntityEx({
+            position = waypoint_pos,
+            model_instance = {source = model}
+        })
     end
 
     -- Compute path models and rotations
@@ -473,36 +549,10 @@ function start()
         path_rotations[i] = {0, math.sin(half), 0, math.cos(half)}
     end
 
-    -- Compute river models and rotations
-    local river_models = {}
-    local river_rotations = {}
-    for i, tile in ipairs(river_tiles) do
-        local dir
-        if i == 1 then
-            dir = get_dir(river_tiles[1], river_tiles[2])
-            river_models[i] = "models/tile-river-straight.fbx"
-        elseif i == #river_tiles then
-            dir = get_dir(river_tiles[#river_tiles-1], river_tiles[#river_tiles])
-            river_models[i] = "models/tile-river-straight.fbx"
-        else
-            local dir1 = get_dir(river_tiles[i-1], river_tiles[i])
-            local dir2 = get_dir(river_tiles[i], river_tiles[i+1])
-            if dir1 == dir2 then
-                dir = dir1
-                river_models[i] = "models/tile-river-straight.fbx"
-            else
-                local diff = (dir2 - dir1 + 4) % 4
-                if diff == 1 then
-                    dir = (dir2 + 1) % 4
-                elseif diff == 3 then
-                    dir = dir2
-                else
-                    dir = dir2
-                end
-                river_models[i] = "models/tile-river-corner.fbx"
-            end
-        end
-        -- set rotation
+    -- Compute rotations for start and end tiles
+    local start_rot = nil
+    if #path_tiles >= 2 then
+        local dir = get_dir(path_tiles[1], path_tiles[2])
         local theta
         if dir == 0 then theta = math.pi / 2
         elseif dir == 1 then theta = 0
@@ -510,7 +560,20 @@ function start()
         else theta = math.pi
         end
         local half = theta / 2
-        river_rotations[i] = {0, math.sin(half), 0, math.cos(half)}
+        start_rot = {0, math.sin(half), 0, math.cos(half)}
+    end
+    local end_rot = nil
+    if #path_tiles >= 2 then
+        local dir = get_dir(path_tiles[#path_tiles-1], path_tiles[#path_tiles])
+        local theta
+        if dir == 0 then theta = math.pi / 2
+        elseif dir == 1 then theta = 0
+        elseif dir == 2 then theta = -math.pi / 2
+        else theta = math.pi
+        end
+        theta = theta + math.pi  -- Flip 180 degrees for spawn-end
+        local half = theta / 2
+        end_rot = {0, math.sin(half), 0, math.cos(half)}
     end
 
     path_index = {}
@@ -518,52 +581,22 @@ function start()
         path_index[tile.x .. "," .. tile.z] = i
     end
 
-    river_index = {}
-    for i, tile in ipairs(river_tiles) do
-        river_index[tile.x .. "," .. tile.z] = i
-    end
-
-    path_set = {}
-    for _, tile in ipairs(path_tiles) do
-        path_set[tile.x .. "," .. tile.z] = true
-    end
-
-    river_set = {}
-    for _, tile in ipairs(river_tiles) do
-        river_set[tile.x .. "," .. tile.z] = true
-    end
-
-    -- Set river tiles non-passable
-    for _, tile in ipairs(river_tiles) do
-        grid_passable[tile.x][tile.z] = false
-    end
-    -- Bridges are passable
-    for _, tile in ipairs(path_tiles) do
-        if path_set[tile.x .. "," .. tile.z] and river_set[tile.x .. "," .. tile.z] then
-            grid_passable[tile.x][tile.z] = true
-        end
-    end
-
     -- Create grid map
-    for x = 0, GRID_SIZE + 1 do
-        for z = 0, GRID_SIZE + 1 do
-            local pos = {(x - GRID_SIZE / 2) * TILE_SPACING, 0, (z - GRID_SIZE / 2) * TILE_SPACING}
+    for x = 0, GRID_WIDTH + 1 do
+        for z = 0, GRID_HEIGHT + 1 do
+            local pos = {(x - GRID_WIDTH / 2) * TILE_SPACING, 0, (z - GRID_HEIGHT / 2) * TILE_SPACING}
             local model = "models/tile-hill.fbx"
             local rot = nil
-            if x >= 1 and x <= GRID_SIZE and z >= 1 and z <= GRID_SIZE then
+            if x >= 1 and x <= GRID_WIDTH and z >= 1 and z <= GRID_HEIGHT then
+                local key = x .. "," .. z
                 if x == map_start.x and z == map_start.z then
                     model = "models/tile-spawn.fbx"
+                    rot = start_rot
                 elseif x == map_end.x and z == map_end.z then
                     model = "models/tile-spawn-end.fbx"
-                elseif path_set[x .. "," .. z] and river_set[x .. "," .. z] then
-                    model = "models/tile-river-bridge.fbx"
-                    rot = river_rotations[river_index[x .. "," .. z]]
-                elseif river_set[x .. "," .. z] then
-                    local idx = river_index[x .. "," .. z]
-                    model = river_models[idx]
-                    rot = river_rotations[idx]
-                elseif path_set[x .. "," .. z] then
-                    local idx = path_index[x .. "," .. z]
+                    rot = end_rot
+                elseif path_set[key] then
+                    local idx = path_index[key]
                     model = path_models[idx]
                     rot = path_rotations[idx]
                 else
@@ -581,7 +614,7 @@ function start()
         end
     end
 
-    -- Fill all non-path, non-river tiles with four trees each at scale 0.5
+    -- Fill all non-path tiles with four trees each at scale 0.5
     local tree_models = {
         "models/detail-tree.fbx",
         "models/detail-tree-large.fbx",
@@ -594,15 +627,16 @@ function start()
         {half_offset, -half_offset},
         {half_offset, half_offset},
     }
-    for x = 1, GRID_SIZE do
-        for z = 1, GRID_SIZE do
-            if not path_set[x .. "," .. z] and not river_set[x .. "," .. z] then
+    for x = 1, GRID_WIDTH do
+        for z = 1, GRID_HEIGHT do
+            local key = x .. "," .. z
+            if not path_set[key] then
                 -- Only populate this tile with trees based on probability
                 if math.random() < TREE_PROBABILITY then
                     if not trees[x] then trees[x] = {} end
                     if not trees[x][z] then trees[x][z] = {} end
-                    local center_x = (x - GRID_SIZE / 2) * TILE_SPACING
-                    local center_z = (z - GRID_SIZE / 2) * TILE_SPACING
+                    local center_x = (x - GRID_WIDTH / 2) * TILE_SPACING
+                    local center_z = (z - GRID_HEIGHT / 2) * TILE_SPACING
                     -- Place `TREES_PER_TILE` instances: uniform random distribution within the tile
                     for i = 1, TREES_PER_TILE do
                         local base_off_x = (math.random() * 2 - 1) * half_offset
@@ -610,13 +644,52 @@ function start()
                         local jitter_x = (math.random() * 2 - 1) * TREE_JITTER * TILE_SPACING
                         local jitter_z = (math.random() * 2 - 1) * TREE_JITTER * TILE_SPACING
                         local pos = {center_x + base_off_x + jitter_x, TREE_OFFSET_Y, center_z + base_off_z + jitter_z}
+                        local tree_scale = 0.5 + math.random() * 0.4  -- Random scale between 0.5 and 0.9
+                        local tree_angle = math.random() * 2 * math.pi  -- Random rotation
+                        local half_angle = tree_angle / 2
+                        local tree_rot = {0, math.sin(half_angle), 0, math.cos(half_angle)}
                         local tree = this.world:createEntityEx({
                             position = pos,
-                            scale = {0.7, 0.7, 0.7},
+                            rotation = tree_rot,
+                            scale = {tree_scale, tree_scale, tree_scale},
                             model_instance = {source = tree_models[math.random(1, #tree_models)]}
                         })
                         table.insert(trees[x][z], tree)
                     end
+                end
+            end
+        end
+    end
+
+    -- Scatter rocks on non-path tiles
+    for x = 1, GRID_WIDTH do
+        for z = 1, GRID_HEIGHT do
+            local key = x .. "," .. z
+            if not path_set[key] then
+                -- Place a rock with some probability
+                if math.random() < ROCK_PROBABILITY then
+                    if not rocks[x] then rocks[x] = {} end
+                    if not rocks[x][z] then rocks[x][z] = {} end
+                    local center_x = (x - GRID_WIDTH / 2) * TILE_SPACING
+                    local center_z = (z - GRID_HEIGHT / 2) * TILE_SPACING
+                    -- Random position within the tile
+                    local off_x = (math.random() * 2 - 1) * 0.5 * TILE_SPACING
+                    local off_z = (math.random() * 2 - 1) * 0.5 * TILE_SPACING
+                    local jitter_x = (math.random() * 2 - 1) * ROCK_JITTER * TILE_SPACING
+                    local jitter_z = (math.random() * 2 - 1) * ROCK_JITTER * TILE_SPACING
+                    local pos = {center_x + off_x + jitter_x, ROCK_OFFSET_Y, center_z + off_z + jitter_z}
+                    local rock_scale = ROCK_SCALE_MIN + math.random() * (ROCK_SCALE_MAX - ROCK_SCALE_MIN)
+                    local rock_angle = math.random() * 2 * math.pi  -- Random rotation
+                    local half_angle = rock_angle / 2
+                    local rock_rot = {0, math.sin(half_angle), 0, math.cos(half_angle)}
+                    local rock_models = {"models/detail-rocks.fbx", "models/detail-dirt.fbx"}
+                    local rock = this.world:createEntityEx({
+                        position = pos,
+                        rotation = rock_rot,
+                        scale = {rock_scale, rock_scale, rock_scale},
+                        model_instance = {source = rock_models[math.random(1, #rock_models)]}
+                    })
+                    table.insert(rocks[x][z], rock)
                 end
             end
         end
@@ -636,8 +709,8 @@ function start()
         model_instance = {source = tower_types[selected_type].model}
     })
 
-    -- Start the first wave
-    wave_active = true
+    -- Start countdown for first wave
+    wave_delay_timer = wave_delay
 end
 
 function spawnEnemy(pos, path, type_index, wave_num)
@@ -665,13 +738,20 @@ function placeTower(x, z, type_index)
         end
         trees[x][z] = nil
     end
-    local pos = {(x - GRID_SIZE / 2) * TILE_SPACING, TOWER_OFFSET_Y, (z - GRID_SIZE / 2) * TILE_SPACING}
+    -- Remove rocks in this tile
+    if rocks[x] and rocks[x][z] then
+        for _, rock in ipairs(rocks[x][z]) do
+            rock:destroy()
+        end
+        rocks[x][z] = nil
+    end
+    local pos = {(x - GRID_WIDTH / 2) * TILE_SPACING, TOWER_OFFSET_Y, (z - GRID_HEIGHT / 2) * TILE_SPACING}
     local tower = this.world:createEntityEx({
         position = pos,
         model_instance = {source = tower_type.model}
     })
     -- Place weapon on top of tower
-    local weapon_pos = {(x - GRID_SIZE / 2) * TILE_SPACING, TOWER_OFFSET_Y + WEAPON_OFFSET_Y, (z - GRID_SIZE / 2) * TILE_SPACING}
+    local weapon_pos = {(x - GRID_WIDTH / 2) * TILE_SPACING, TOWER_OFFSET_Y + WEAPON_OFFSET_Y, (z - GRID_HEIGHT / 2) * TILE_SPACING}
     local weapon = this.world:createEntityEx({
         position = weapon_pos,
         model_instance = {source = tower_type.weapon}
@@ -720,7 +800,7 @@ function update(dt)
         spawn_timer = spawn_timer + dt
         local wave = waves[current_wave]
         if spawn_timer >= wave.interval and enemies_spawned_in_wave < wave.count and map_start.x and path_tiles then
-            local start_pos = {(map_start.x - GRID_SIZE / 2) * TILE_SPACING, 0, (map_start.z - GRID_SIZE / 2) * TILE_SPACING}
+            local start_pos = {(map_start.x - GRID_WIDTH / 2) * TILE_SPACING, 0, (map_start.z - GRID_HEIGHT / 2) * TILE_SPACING}
             local type_index = wave.enemy_types[math.random(1, #wave.enemy_types)]
             spawnEnemy(start_pos, path_tiles, type_index, current_wave)
             enemies_spawned_in_wave = enemies_spawned_in_wave + 1
@@ -767,7 +847,7 @@ function update(dt)
         if data.health > 0 then
             if data.current_index <= #data.path then
                 local current_tile = data.path[data.current_index]
-                local tile_pos = {(current_tile.x - GRID_SIZE / 2) * TILE_SPACING, 0, (current_tile.z - GRID_SIZE / 2) * TILE_SPACING}
+                local tile_pos = {(current_tile.x - GRID_WIDTH / 2) * TILE_SPACING, 0, (current_tile.z - GRID_HEIGHT / 2) * TILE_SPACING}
                 local dist = distance(enemy.position, tile_pos)
                 if dist < 0.5 then
                     data.current_index = data.current_index + 1
@@ -887,13 +967,13 @@ function update(dt)
                         ray.origin[3] + t * ray.dir[3]
                     }
                     -- Snap to grid
-                    local grid_x = math.floor((pos[1] / TILE_SPACING) + GRID_SIZE / 2 + 0.5)
-                    local grid_z = math.floor((pos[3] / TILE_SPACING) + GRID_SIZE / 2 + 0.5)
-                    if grid_x >= 1 and grid_x <= GRID_SIZE and grid_z >= 1 and grid_z <= GRID_SIZE then
+                    local grid_x = math.floor((pos[1] / TILE_SPACING) + GRID_WIDTH / 2 + 0.5)
+                    local grid_z = math.floor((pos[3] / TILE_SPACING) + GRID_HEIGHT / 2 + 0.5)
+                    if grid_x >= 1 and grid_x <= GRID_WIDTH and grid_z >= 1 and grid_z <= GRID_HEIGHT then
                         local snapped_pos = {
-                            (grid_x - GRID_SIZE / 2) * TILE_SPACING,
+                            (grid_x - GRID_WIDTH / 2) * TILE_SPACING,
                             TOWER_OFFSET_Y,
-                            (grid_z - GRID_SIZE / 2) * TILE_SPACING
+                            (grid_z - GRID_HEIGHT / 2) * TILE_SPACING
                         }
                         placeholder_tower.position = snapped_pos
                         if left_click and isTilePlaceable(grid_x, grid_z) then
@@ -922,6 +1002,16 @@ function update(dt)
     end
     if wave_text then
         wave_text.gui_text.text = "Wave: " .. tostring(current_wave)
+    end
+    if countdown_text then
+        if wave_delay_timer > 0 then
+            countdown_text.gui_text.text = "Next wave in: " .. tostring(math.ceil(wave_delay_timer))
+            countdown_text.gui_rect.top_relative = 0.5
+            countdown_text.gui_rect.enabled = true
+        else
+            countdown_text.gui_text.text = ""
+            countdown_text.gui_rect.enabled = false
+        end
     end
 end
 
@@ -956,10 +1046,9 @@ function onInputEvent(event)
     end
 end
 
--- helper: check if tile is placeable (in bounds and not on path or river)
 function isTilePlaceable(x, z)
-    if x < 1 or x > GRID_SIZE or z < 1 or z > GRID_SIZE then return false end
-    if path_set and path_set[x .. "," .. z] then return false end
-    if river_set and river_set[x .. "," .. z] then return false end
+    if x < 1 or x > GRID_WIDTH or z < 1 or z > GRID_HEIGHT then return false end
+    local key = x .. "," .. z
+    if path_set and path_set[key] then return false end
     return true
 end

@@ -1,6 +1,6 @@
 type = patch9
-top = 108
-bottom = 20
-left = 365
-right = 19
-texture = "ui/PNG/button_rectangle_border.png"
+top = 16
+bottom = 112
+left = 16
+right = 368
+texture = "/ui/PNG/button_rectangle_border.png"

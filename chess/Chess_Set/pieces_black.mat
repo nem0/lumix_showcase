@@ -1,0 +1,12 @@
+shader "/engine/shaders/standard.hlsl"
+backface_culling true
+layer "default"
+texture "Unreal_Textures/Pieces_low_Pieces_BaseColor.jpg"
+texture "Unreal_Textures/Pieces_low_Pieces_Normal.jpg"
+texture ""
+texture ""
+uniform "Material color", { 0.120000, 0.120000, 0.120000, 1.000000 }
+uniform "Roughness", 0.800000
+uniform "Metallic", 1.000000
+uniform "Emission", 0.000000
+uniform "Translucency", 0.000000

@@ -1,0 +1,5 @@
+
+origin = "center"
+lod_count = 1
+split = true
+lod0_distance = 10000.000000

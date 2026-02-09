@@ -17,6 +17,21 @@ Pilot a ship through waves of asteroids, dodge impacts, and pick up powerups to 
 - Powerups: Rapid Fire, Shield, and +1 Life
 - Particle effects for exhaust, hits, and explosions
 
+## Controls
+
+### Keyboard
+- **WASD**: Ship movement (W = thrust forward, S = thrust backward, A/D = turn left/right)
+- **SPACE**: Shoot
+- **SHIFT**: Boost (when thrusting forward, consumes energy)
+- **R**: Restart game
+
+### Gamepad
+- **Right Stick**: Turn left/right (X-axis)
+- **Left Stick**: Thrust forward/backward (Y-axis)
+- **Right Trigger**: Shoot
+- **Left Trigger**: Boost (when thrusting forward, consumes energy)
+- **Start Button**: Restart game
+
 ## Assets
 
 - 3D models from Quaternius Ultimate Platformer Pack (CC0). See [asteroids/models/License.txt](models/License.txt).

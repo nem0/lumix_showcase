@@ -110,7 +110,7 @@ local KEY_R = LumixAPI.Keycode.R
 local KEY_SHIFT = LumixAPI.Keycode.SHIFT
 
 -- Gamepad button constants (tested on xbox controller)
-local GPAD_BUTTON_START = 7  -- Restart
+local GPAD_BUTTON_START = 4  -- Restart
 local GPAD_AXIS_LEFT_X = 0  -- Turn left/right (right stick X)
 local GPAD_AXIS_LEFT_Y = 1  -- Thrust forward/backward (right stick Y)
 local GPAD_AXIS_LEFT_TRIGGER = 4  -- Left trigger (boost)

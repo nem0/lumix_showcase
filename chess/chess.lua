@@ -467,10 +467,7 @@ function start()
     end
 
     -- Enable cursor for GUI
-    local gui_system = this.world:getModule("gui"):getSystem()
-    gui_system:enableCursor(true)
-
-    gui_module = this.world:getModule("gui")
+    this.world.gui:getSystem():enableCursor(true)
 
     -- Create UI canvas
     canvas = this.world:createEntityEx({

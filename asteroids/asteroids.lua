@@ -552,7 +552,7 @@ function start()
 		environment = {direct_intensity = 2.0, light_color = {1.0, 1.0, 1.0}, atmo_enabled = false}
 	})
 
-	local gui_module = this.world:getModule("gui")
+	local gui_module = this.world.gui
 	if gui_module then
 		gui_module:getSystem():enableCursor(false)
 	end

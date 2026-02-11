@@ -374,10 +374,7 @@ local function generateMap()
 end
 
 function start()
-    local gui = this.world:getModule("gui")
-    if gui then
-        gui:getSystem():enableCursor(true)
-    end
+    this.world.gui:getSystem():enableCursor(true)
 
     -- Create UI canvas
     local canvas = this.world:createEntityEx({

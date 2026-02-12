@@ -1,0 +1,6 @@
+type = patch9
+top = 17
+bottom = 30
+left = 12
+right = 31
+texture = "/hex/ui/ui-borders/Default/Transparent center/panel-transparent-center-015.png"

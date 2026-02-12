@@ -1,0 +1,6 @@
+type = patch9
+top = 22
+bottom = 25
+left = 22
+right = 25
+texture = "/hex/ui/ui-borders/Default/Panel/panel-026.png"

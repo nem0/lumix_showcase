@@ -1,5 +1,4 @@
--- Hex grid creation script for Lumix Engine
--- Creates a 30x20 grid with mixed terrain (grass, water) surrounded by water border
+local building_types = require("hex/building_types")
 
 local GRID_WIDTH = 30
 local GRID_HEIGHT = 20
@@ -10,43 +9,52 @@ local TREE_PROBABILITY = 0.75  -- Probability of placing a tree on each grass he
 local MOUNTAIN_PROBABILITY = 0.1  -- Probability of placing a mountain on each grass hex (0.0 to 1.0)
 local WATER_FEATURE_PROBABILITY = 0.03  -- Probability of converting a hex to water with features (0.0 to 1.0)
 local MOUSE_WHEEL_ZOOM_MULTIPLIER = 30 -- How fast does mouse wheel zoom
+local TREE_ANIMATION_SPEED = 2.0 -- Speed of tree animation when hovered
+local TREE_HOVER_HEIGHT = 0.3 -- Height trees rise when hovered
+local BASE_HAPPINESS = 5 -- Base happiness level
+local INDUSTRIAL_HAPPINESS_PENALTY = 1 -- Happiness penalty per industrial building
+local TAVERN_HAPPINESS_BONUS = 10 -- Happiness bonus per tavern
+local WOOD_PER_TREE = 4 -- Wood gained per tree cut
+local BUILD_UI_ANIMATION_DURATION = 0.3 -- Duration of build UI animation
+local BUILD_UI_ANIMATION_SPEED_MULTIPLIER = 4 -- Speed multiplier for build UI animation
 
 local center_x = ((GRID_WIDTH - 1) * HEX_SPACING_X + (GRID_HEIGHT % 2) * (HEX_SPACING_X / 2)) / 2
 local center_z = (GRID_HEIGHT - 1) * HEX_SPACING_Z / 2
 
--- Camera control variables
-local camera_entity = nil
-local camera_speed = 20.0  -- Units per second
-local camera_zoom_speed = 10.0  -- Units per second
-local camera_min_height = 10.0
-local camera_max_height = 100.0
-local camera_min_distance = 10.0
-local camera_max_distance = 100.0
-
--- Camera movement boundaries (based on grid size with padding)
-local camera_min_x = center_x - 40  -- Allow some padding beyond grid
-local camera_max_x = center_x + 40
-local camera_min_z = center_z - 30
-local camera_max_z = center_z + 30
+local camera = {
+    entity = nil,
+    speed = 20.0,
+    zoom_speed = 10.0,
+    min_height = 10.0,
+    max_height = 100.0,
+    min_distance = 10.0,
+    max_distance = 100.0,
+    min_x = center_x - 40,
+    max_x = center_x + 40,
+    min_z = center_z - 30,
+    max_z = center_z + 30,
+    -- input
+    move_left = 0,
+    move_right = 0,
+    move_forward = 0,
+    move_back = 0,
+    zoom_in = 0,
+    zoom_out = 0,
+    zoom_wheel = 0,
+    -- mouse panning
+    panning = false,
+    last_mouse_x = 0,
+    last_mouse_y = 0,
+    pan_sensitivity = 0.03
+}
 
 -- Input state variables
-local move_left = 0
-local move_right = 0
-local move_forward = 0
-local move_back = 0
-local zoom_in = 0
-local zoom_out = 0
-local zoom_wheel = 0
 
--- Mouse panning variables
-local mouse_panning = false
-local last_mouse_x = 0
-local last_mouse_y = 0
-local pan_sensitivity = 0.03  -- Adjust panning speed
-
-local mouse_pos = {0, 0}
-
-local resources = {
+local game_state = {
+    population = 1,
+    max_population = 10, -- initial limit (people live in the castle)
+    happiness = BASE_HAPPINESS, -- base happiness
+    turn_actions = 1, -- number of remaining actions in this turn
     wood = 0,
     grain = 2,
     water = 10,
@@ -55,94 +63,44 @@ local resources = {
     tools = 50
 }
 
-local stats = {
-    population = 1,
-    max_population = 10, -- initial limit (people live in the castle)
-    happiness = 5 -- base happiness
+local ui = {
+    build_ui_visible = false,
+    build_panel = nil,
+    build_buttons = {},
+    build_ui_animation_time = 0,
+    build_ui_animation_duration = BUILD_UI_ANIMATION_DURATION,
+    resource_texts = {},
+    stat_entities = {},
+    canvas = nil,
+    top_strip = nil,
+    next_turn_button = nil,
+    cut_trees_button = nil,
+    build_button = nil
 }
 
-
-local turn_actions = 1 -- number of remaining actions in this turn
-
+local mouse_pos = {0, 0}
 local tree_cutting_mode = false
-local hovered_tree = nil
-local last_hovered_tree = nil
-local tree_animation_time = 0
-
-local build_ui_visible = false
-local build_panel = nil
-local build_buttons = {}
-local build_ui_animation_time = 0
-local build_ui_animation_duration = 0.3
-
 local building_placement_mode = false
 local selected_building = nil
 local hovered_hex = nil
 local last_hovered_hex = nil
 local building_preview = nil
-
-local building_types = {
-    home = {
-        models = { "building_home_A_green.fbx", "building_home_A_blue.fbx" },
-        cost = { stone = 2, wood = 2, tools = 1 },
-        one_time = { population_limit = 1 },
-        unlocked = true
-    },
-    field = {
-        models = { "building_grain.fbx" },
-        cost = { wood = 1, tools = 1 },
-        per_turn = { grain = 1 },
-        unlocked = true
-    },
-    well = {
-        models = { "building_well_blue.fbx", "building_well_green.fbx" },
-        cost = { stone = 2, wood = 1, tools = 1 },
-        per_turn = { water = 1 },
-        unlocked = true
-    },
-    mine = {
-        models = { "building_mine_blue.fbx", "building_mine_green.fbx" },
-        cost = { wood = 4, stone = 2, tools = 3 },
-        per_turn = { stone = 1 }
-    },
-    lumbermill = {
-        models = { "building_lumbermill_blue.fbx", "building_lumbermill_green.fbx" },
-        cost = { stone = 1, wood = 1, tools = 1 },
-        per_turn = { wood = 1 }
-    },
-    tavern = {
-        models = { "building_tavern_blue.fbx", "building_tavern_green.fbx" },
-        cost = { stone = 3, wood = 3, tools = 2 },
-        one_time = { happiness = 10 }
-    },
-    blacksmith = {
-        models = { "building_blacksmith_blue.fbx", "building_blacksmith_green.fbx" },
-        cost = { stone = 3, wood = 3, tools = 3 },
-        per_turn = { tools = 1 }
-    },
-    windmill = {
-        models = { "building_windmill_blue.fbx", "building_windmill_green.fbx" },
-        cost = { stone = 3, wood = 2, tools = 4 },
-        per_turn = { actions = 1 }
-    },
-    market = {
-        models = { "building_market_blue.fbx", "building_market_green.fbx" },
-        cost = { stone = 5, wood = 5, tools = 5 },
-    }
-}
+local hovered_tree = nil
+local tree_animation_time = 0
+local hex_group = nil
 
 local function update_ui()
-    for res, entity in pairs(resource_texts) do
-        entity.gui_text.text = res .. ": " .. resources[res]
+    for res, entity in pairs(ui.resource_texts) do
+        entity.gui_text.text = game_state[res]
     end
-    stat_entities[1].gui_text.text = "Population: " .. stats.population .. "/" .. stats.max_population
-    stat_entities[2].gui_text.text = "Happiness: " .. stats.happiness
-    stat_entities[3].gui_text.text = "Actions: " .. turn_actions
+    ui.stat_entities[1].gui_text.text = game_state.population .. "/" .. game_state.max_population
+    ui.stat_entities[2].gui_text.text = game_state.happiness
+    ui.stat_entities[3].gui_text.text = game_state.turn_actions
 end
 
 local function can_afford(cost)
     for res, amount in pairs(cost or {}) do
-        if (resources[res] or 0) < amount then return false end
+        if (game_state[res] or 0) < amount then return false end
     end
     return true
 end
@@ -266,7 +224,7 @@ local create_map = function()
     local camera_distance = 40
     local pitch = -0.8  -- Downward tilt in radians
     local half_pitch = pitch * 0.5
-    camera_entity = this.world:createEntityEx({
+    camera.entity = this.world:createEntityEx({
         name = "main_camera",
         position = {0, camera_height, camera_distance},
         rotation = {math.sin(half_pitch), 0, 0, math.cos(half_pitch)},  -- Quaternion: (x, y, z, w)
@@ -348,9 +306,9 @@ local function next_turn()
                 if building_data.per_turn then
                     for res, amount in pairs(building_data.per_turn) do
                         if res == "actions" then
-                            turn_actions = turn_actions + amount
+                            game_state.turn_actions = game_state.turn_actions + amount
                         else
-                            resources[res] = resources[res] + amount
+                            game_state[res] = game_state[res] + amount
                         end
                     end
                 end
@@ -365,185 +323,279 @@ local function next_turn()
     end
     
     -- Consumption phase: consume resources based on population
-    local grain_consumed = math.min(stats.population, resources.grain)
-    local water_consumed = math.min(stats.population, resources.water)
+    local grain_consumed = math.min(game_state.population, game_state.grain)
+    local water_consumed = math.min(game_state.population, game_state.water)
     
-    LumixAPI.logInfo("Consumption: Population " .. stats.population .. " consuming " .. grain_consumed .. " grain and " .. water_consumed .. " water")
+    LumixAPI.logInfo("Consumption: Population " .. game_state.population .. " consuming " .. grain_consumed .. " grain and " .. water_consumed .. " water")
     
-    resources.grain = resources.grain - grain_consumed
-    resources.water = resources.water - water_consumed
+    game_state.grain = game_state.grain - grain_consumed
+    game_state.water = game_state.water - water_consumed
     
     -- Population shrink due to insufficient resources
-    local missing_resources = stats.population - grain_consumed + stats.population - water_consumed
+    local missing_resources = game_state.population - grain_consumed + game_state.population - water_consumed
     if missing_resources > 0 then
         LumixAPI.logInfo("Population shrinking due to insufficient resources: " .. missing_resources .. " units lost")
-        stats.population = stats.population - missing_resources
+        game_state.population = game_state.population - missing_resources
     end
     
     -- Population shrink due to happiness = 0
-    if stats.happiness <= 0 then
+    if game_state.happiness <= 0 then
         LumixAPI.logInfo("Population shrinking due to low happiness: 1 unit lost")
-        stats.population = math.max(0, stats.population - 1)
+        game_state.population = math.max(0, game_state.population - 1)
     end
     
     -- Update happiness (reset each turn based on current state)
-    -- Base happiness minus population minus industrial buildings (to be implemented)
-    local old_happiness = stats.happiness
-    stats.happiness = 5 - stats.population - industrial_count + tavern_count * 10
+    -- Base happiness minus population minus industrial buildings plus tavern bonuses
+    local old_happiness = game_state.happiness
+    game_state.happiness = BASE_HAPPINESS - game_state.population - industrial_count * INDUSTRIAL_HAPPINESS_PENALTY + tavern_count * TAVERN_HAPPINESS_BONUS
     
-    LumixAPI.logInfo("Happiness updated: " .. old_happiness .. " -> " .. stats.happiness)
+    LumixAPI.logInfo("Happiness updated: " .. old_happiness .. " -> " .. game_state.happiness)
     
     -- Population growth phase
-    local can_grow = stats.happiness > 0 and stats.population < stats.max_population and 
-                     resources.grain >= stats.population + 1 and resources.water >= stats.population + 1
+    local can_grow = game_state.happiness > 0 and game_state.population < game_state.max_population and 
+                     game_state.grain >= game_state.population + 1 and game_state.water >= game_state.population + 1
     
     if can_grow then
         LumixAPI.logInfo("Population growing: conditions met (happiness > 0, space available, sufficient resources)")
-        stats.population = stats.population + 1
+        game_state.population = game_state.population + 1
     else
         local reasons = {}
-        if stats.happiness <= 0 then table.insert(reasons, "happiness <= 0") end
-        if stats.population >= stats.max_population then table.insert(reasons, "at max population") end
-        if resources.grain < stats.population + 1 then table.insert(reasons, "insufficient grain") end
-        if resources.water < stats.population + 1 then table.insert(reasons, "insufficient water") end
+        if game_state.happiness <= 0 then table.insert(reasons, "happiness <= 0") end
+        if game_state.population >= game_state.max_population then table.insert(reasons, "at max population") end
+        if game_state.grain < game_state.population + 1 then table.insert(reasons, "insufficient grain") end
+        if game_state.water < game_state.population + 1 then table.insert(reasons, "insufficient water") end
         LumixAPI.logInfo("Population not growing: " .. table.concat(reasons, ", "))
     end
     
     -- Compute new number of actions
-    local base_actions = stats.population
-    turn_actions = base_actions
-    if stats.happiness <= 0 then
-        turn_actions = math.floor(turn_actions / 2)
-        LumixAPI.logInfo("Actions halved due to low happiness: " .. base_actions .. " -> " .. turn_actions)
+    local base_actions = game_state.population
+    game_state.turn_actions = base_actions
+    if game_state.happiness <= 0 then
+        game_state.turn_actions = math.floor(game_state.turn_actions / 2)
+        LumixAPI.logInfo("Actions halved due to low happiness: " .. base_actions .. " -> " .. game_state.turn_actions)
     else
-        LumixAPI.logInfo("Actions set to population: " .. turn_actions)
+        LumixAPI.logInfo("Actions set to population: " .. game_state.turn_actions)
     end
     
     -- Update UI
     update_ui()
     
-    LumixAPI.logInfo("Next turn completed - Population: " .. stats.population .. ", Actions: " .. turn_actions .. ", Resources: grain=" .. resources.grain .. ", water=" .. resources.water)
+    LumixAPI.logInfo("Next turn completed - Population: " .. game_state.population .. ", Actions: " .. game_state.turn_actions .. ", Resources: grain=" .. game_state.grain .. ", water=" .. game_state.water)
 end
 
-local function create_build_panel(canvas)
+local function create_build_panel()
     -- Create build panel
-    build_panel = this.world:createEntityEx({
-        gui_rect = {
-            left_relative = 1,
-            left_points = 0,  -- start off-screen
-            right_relative = 1,
-            right_points = 0,
-            top_points = 50,
-            bottom_relative = 1,
-            bottom_points = 0
-        },
-        gui_image = { color = {0.8, 0.8, 0.8, 0.9} },
-        parent = canvas
-    })
-
-    -- Get unlocked buildings
-    local unlocked_buildings = {}
+    -- Count unlocked buildings
+    local unlocked_count = 0
     for name, building in pairs(building_types) do
         if building.unlocked then
-            table.insert(unlocked_buildings, {name = name, data = building})
+            unlocked_count = unlocked_count + 1
         end
     end
+    local screen_width = 1920  -- assumed screen width
+    ui.build_panel = this.world:createEntityEx({
+        gui_rect = {
+            left_relative = 0,
+            left_points = 0,
+            right_relative = 1,
+            right_points = 0,
+            top_relative = 1,
+            top_points = -400,  -- start below, anchored to bottom
+            bottom_relative = 1,
+            bottom_points = -80
+        },
+        --gui_image = { sprite = "hex/ui/ui-borders/default/panel/panel-026.spr" },
+        parent = ui.canvas
+    })
 
     -- Create buttons for each unlocked building
-    build_buttons = {}
-    for i, building in ipairs(unlocked_buildings) do
-        local button = this.world:createEntityEx({
-            gui_button = {},
-            gui_rect = {
-                left_points = 10,
-                right_points = 290,
-                top_points = 10 + (i-1)*60,
-                bottom_points = 60 + (i-1)*60,
-                bottom_relative = 0
-            },
-            gui_image = {
-                sprite = "ui/button_rectangle_border.spr"
-            },
-            gui_text = {
-                text = building.name,
-                font_size = 24,
-                color = {0.0, 0.0, 0.0, 1.0},
-                font = "ui/font/Kenney Future.ttf",
-                horizontal_align = LumixAPI.TextHAlign.CENTER,
-                vertical_align = LumixAPI.TextVAlign.MIDDLE
-            },
-            lua_script = {},
-            parent = build_panel
-        })
-        button.lua_script.scripts:add()
-        button.lua_script[1].onButtonClicked = function()
-            if can_afford(building.data.cost) then
-                selected_building = building.name
-                building_placement_mode = true
-                tree_cutting_mode = false
-                build_ui_visible = false
-                build_ui_animation_time = 0
-                LumixAPI.logInfo("Selected building: " .. building.name)
-            else
-                LumixAPI.logInfo("Cannot afford building: " .. building.name)
+    ui.build_buttons = {}
+    local i = 0
+    for name, building in pairs(building_types) do
+        if building.unlocked then
+            i = i + 1
+            local button = this.world:createEntityEx({
+                gui_button = {
+                    hovered_color = {0.2, 0.2, 0.2, 1.0}
+                },
+                gui_rect = {
+                    left_relative = 0,
+                    left_points = 10 + (i-1) * 210,  -- 10px left margin + 210px per button (200px width + 10px spacing)
+                    right_relative = 0,
+                    right_points = 10 + i * 210 - 10,  -- 10px left margin + button width - 10px spacing between buttons
+                    top_points = 30,  -- add 10px top padding
+                    bottom_points = 320,  -- increased height to fit cost icons at bottom
+                    bottom_relative = 0
+                },
+                gui_image = {
+                    sprite = "hex/ui/ui-borders/default/panel/panel-026.spr",
+                    color = {1.0, 0.7, 0.4, 0.3},
+                },
+                lua_script = {},
+                parent = ui.build_panel
+            })
+
+            local text = this.world:createEntityEx({
+                gui_rect = { top_points = 5 },
+                gui_text = {
+                    text = name,
+                    font_size = 36,
+                    color = {0.0, 0.0, 0.0, 1.0},
+                    font = "ui/font/Kenney Future.ttf",
+                    horizontal_align = LumixAPI.TextHAlign.CENTER,
+                    vertical_align = LumixAPI.TextVAlign.TOP  -- text at top
+                },
+                parent = button
+            })
+
+            -- Render target inside the button: positioned below its top, 200x200 points
+            local rt = this.world:createEntityEx({
+                gui_rect = {
+                    left_relative = 0,
+                    left_points = 5,
+                    right_relative = 1,
+                    right_points = -5,
+                    top_points = 60,     -- below text
+                    bottom_points = 240, -- adjusted to make space for cost icons below
+                    bottom_relative = 0
+                },
+                gui_render_target = {},
+                lua_script = { 
+                    scripts = { 
+                        { path = "hex/render.lua" }
+                    } 
+                },
+                parent = button
+            })
+
+            rt.lua_script[1].model_path = "hex/models/" .. building.models[1]
+
+            -- Add cost icons below the render target
+            local cost_y = 245
+            local icon_size = 32
+            local spacing = 55
+            local cost_index = 0
+            for res, amount in pairs(building.cost) do
+                local sprite_name = res
+                if res == "grain" then sprite_name = "food" end
+                local icon_entity = this.world:createEntityEx({
+                    gui_image = { sprite = "hex/ui/" .. sprite_name .. ".spr" },
+                    gui_rect = {
+                        left_relative = 0,
+                        left_points = 20 + cost_index * spacing,
+                        top_points = cost_y,
+                        right_relative = 0,
+                        right_points = 20 + cost_index * spacing + icon_size,
+                        bottom_points = cost_y + icon_size,
+                        bottom_relative = 0
+                    },
+                    parent = button
+                })
+                local text_entity = this.world:createEntityEx({
+                    gui_text = {
+                        text = tostring(amount),
+                        font_size = 24,  -- doubled from 12
+                        color = {0.0, 0.0, 0.0, 1.0},
+                        font = "ui/font/Kenney Future.ttf",
+                        horizontal_align = LumixAPI.TextHAlign.LEFT,
+                        vertical_align = LumixAPI.TextVAlign.TOP
+                    },
+                    gui_rect = {
+                        left_relative = 0,
+                        left_points = 20 + cost_index * spacing + icon_size + 2,
+                        top_points = cost_y,
+                        right_relative = 0,
+                        right_points = 20 + cost_index * spacing + icon_size + 17,
+                        bottom_points = cost_y + icon_size
+                    },
+                    parent = button
+                })
+                cost_index = cost_index + 1
             end
+
+            button.lua_script.scripts:add()
+            button.lua_script[1].onButtonClicked = function()
+                if can_afford(building.cost) then
+                    selected_building = name
+                    building_placement_mode = true
+                    tree_cutting_mode = false
+                    ui.build_ui_visible = false
+                    ui.build_ui_animation_time = 0
+                    LumixAPI.logInfo("Selected building: " .. name)
+                else
+                    LumixAPI.logInfo("Cannot afford building: " .. name)
+                end
+            end
+            table.insert(ui.build_buttons, button)
         end
-        table.insert(build_buttons, button)
     end
 end
 
 function start()
     -- Enable cursor for interaction
-    local gui_system = this.world:getModule("gui"):getSystem()
-    gui_system:enableCursor(true)
+    this.world.gui:getSystem():enableCursor(true)
 	
     create_map()
 
     -- Create HUD canvas
-    local canvas = this.world:createEntityEx({
+    ui.canvas = this.world:createEntityEx({
         gui_canvas = {},
         gui_rect = {}
     })
 
-    local top_strip = this.world:createEntityEx({
+    ui.top_strip = this.world:createEntityEx({
         gui_rect = {
             bottom_relative = 0,
             bottom_points = 50
         },
         gui_image = { color = {1, 1, 1, 0.1} },
-        parent = canvas
+        parent = ui.canvas
     })
 
     -- Create resource texts
-    local resource_order = {"wood", "grain", "water", "stone", "gold", "tools"}
-    resource_texts = {}
+    local resource_order = {"grain", "water", "wood", "stone", "tools", "gold" }
+    ui.resource_texts = {}
     for i, res in ipairs(resource_order) do
-        local entity = this.world:createEntityEx({
-            gui_text = {text = res .. ": " .. resources[res], font_size = 30, color = {0.0, 0.0, 0.0, 1.0}, font = "ui/font/Kenney Future.ttf"},
-            gui_rect = {left_points = 10 + (i-1)*200, top_points = 10},
-            parent = top_strip
+        local sprite_name = res
+        if res == "grain" then sprite_name = "food" end
+        local image_entity = this.world:createEntityEx({
+            gui_image = { sprite = "hex/ui/" .. sprite_name .. ".spr" },
+            gui_rect = {left_relative = 0, left_points = 10 + (i-1)*100, top_relative = 0, top_points = 5, right_relative = 0, right_points = 10 + (i-1)*100 + 40, bottom_relative = 0, bottom_points = 45},
+            parent = ui.top_strip
         })
-        resource_texts[res] = entity
+        local entity = this.world:createEntityEx({
+            gui_text = {text = game_state[res], font_size = 30, color = {0.0, 0.0, 0.0, 1.0}, font = "ui/font/Kenney Future.ttf"},
+            gui_rect = {left_relative = 0, left_points = 10 + (i-1)*100 + 50, top_relative = 0, top_points = 10},
+            parent = ui.top_strip
+        })
+        ui.resource_texts[res] = entity
     end
 
     -- Create stat texts
     local stat_texts = {
-        "Population: " .. stats.population .. "/" .. stats.max_population,
-        "Happiness: " .. stats.happiness,
-        "Actions: " .. turn_actions
+        game_state.population .. "/" .. game_state.max_population,
+        game_state.happiness,
+        game_state.turn_actions
     }
-    stat_entities = {}
+    local stat_sprites = {"person", "happiness", "actions"}
+    ui.stat_entities = {}
     for i, text in ipairs(stat_texts) do
-        local entity = this.world:createEntityEx({
-            gui_text = {text = text, font_size = 30, color = {0.0, 0.0, 0.0, 1.0}, font = "ui/font/Kenney Future.ttf"},
-            gui_rect = {left_points = 10 + 6*200 + 150 + (i-1)*300, top_points = 10},
-            parent = top_strip
+        local base_left = - ((4 - i) * 130)
+        local image_entity = this.world:createEntityEx({
+            gui_image = { sprite = "hex/ui/" .. stat_sprites[i] .. ".spr" },
+            gui_rect = {left_relative = 1, left_points = base_left, top_relative = 0, top_points = 5, right_relative = 1, right_points = base_left + 40, bottom_relative = 0, bottom_points = 45},
+            parent = ui.top_strip
         })
-        stat_entities[i] = entity
+        local entity = this.world:createEntityEx({
+            gui_text = {text = text, font_size = 30, color = {0.0, 0.0, 0.0, 1.0}, font = "ui/font/Kenney Future.ttf", horizontal_align = LumixAPI.TextHAlign.LEFT},
+            gui_rect = {left_relative = 1, left_points = base_left + 50, top_relative = 0, top_points = 10, right_relative = 1, right_points = base_left + 110},
+            parent = ui.top_strip
+        })
+        ui.stat_entities[i] = entity
     end
 
     -- Create next turn button
-    local next_turn_button = this.world:createEntityEx({
+    ui.next_turn_button = this.world:createEntityEx({
         gui_button = {},
         gui_rect = {
             left_relative = 1,
@@ -556,7 +608,7 @@ function start()
             bottom_points = -5
         },
         gui_image = {
-            sprite = "ui/button_rectangle_border.spr"
+            sprite = "hex/ui/ui-borders/default/panel/panel-015.spr"
         },
         gui_text = {
             text = "Next Turn",
@@ -567,15 +619,15 @@ function start()
             vertical_align = LumixAPI.TextVAlign.MIDDLE
         },
         lua_script = {},
-        parent = canvas
+        parent = ui.canvas
     })
-    next_turn_button.lua_script.scripts:add()
-    next_turn_button.lua_script[1].onButtonClicked = function()
+    ui.next_turn_button.lua_script.scripts:add()
+    ui.next_turn_button.lua_script[1].onButtonClicked = function()
         next_turn()
     end
 
     -- Create cut trees button
-    local cut_trees_button = this.world:createEntityEx({
+    ui.cut_trees_button = this.world:createEntityEx({
         gui_button = {},
         gui_rect = {
             left_points = 10,
@@ -587,7 +639,7 @@ function start()
             bottom_points = -5
         },
         gui_image = {
-            sprite = "ui/button_rectangle_border.spr"
+            sprite = "hex/ui/ui-borders/default/panel/panel-015.spr"
         },
         gui_text = {
             text = "Cut Trees",
@@ -598,16 +650,16 @@ function start()
             vertical_align = LumixAPI.TextVAlign.MIDDLE
         },
         lua_script = {},
-        parent = canvas
+        parent = ui.canvas
     })
-    cut_trees_button.lua_script.scripts:add()
-    cut_trees_button.lua_script[1].onButtonClicked = function()
+    ui.cut_trees_button.lua_script.scripts:add()
+    ui.cut_trees_button.lua_script[1].onButtonClicked = function()
         tree_cutting_mode = not tree_cutting_mode
         LumixAPI.logInfo("Tree cutting mode: " .. tostring(tree_cutting_mode))
     end
 
     -- Create build button
-    local build_button = this.world:createEntityEx({
+    ui.build_button = this.world:createEntityEx({
         gui_button = {},
         gui_rect = {
             left_points = 260,
@@ -619,7 +671,7 @@ function start()
             bottom_points = -5
         },
         gui_image = {
-            sprite = "ui/button_rectangle_border.spr"
+            sprite = "hex/ui/ui-borders/default/panel/panel-015.spr"
         },
         gui_text = {
             text = "Build",
@@ -630,14 +682,14 @@ function start()
             vertical_align = LumixAPI.TextVAlign.MIDDLE
         },
         lua_script = {},
-        parent = canvas
+        parent = ui.canvas
     })
-    build_button.lua_script.scripts:add()
-    build_button.lua_script[1].onButtonClicked = function()
-        build_ui_visible = not build_ui_visible
-        build_ui_animation_time = 0
-        if build_ui_visible and not build_panel then
-            create_build_panel(canvas)
+    ui.build_button.lua_script.scripts:add()
+    ui.build_button.lua_script[1].onButtonClicked = function()
+        ui.build_ui_visible = not ui.build_ui_visible
+        ui.build_ui_animation_time = 0
+        if ui.build_ui_visible and not ui.build_panel then
+            create_build_panel()
         end
     end
 
@@ -664,7 +716,7 @@ end
 
 function onInputEvent(event)
     if event.type == "mouse_wheel" then
-        zoom_wheel = zoom_wheel - event.y * MOUSE_WHEEL_ZOOM_MULTIPLIER
+        camera.zoom_wheel = camera.zoom_wheel - event.y * MOUSE_WHEEL_ZOOM_MULTIPLIER
     elseif event.type == "axis" and event.device.type == "mouse" then
         mouse_pos[1] = event.x_abs
         mouse_pos[2] = event.y_abs
@@ -672,23 +724,23 @@ function onInputEvent(event)
         if event.device.type == "keyboard" then
             -- Handle camera movement keys
             if event.key_id == LumixAPI.Keycode.W then
-                move_forward = event.down and 1 or 0
+                camera.move_forward = event.down and 1 or 0
             elseif event.key_id == LumixAPI.Keycode.S then
-                move_back = event.down and 1 or 0
+                camera.move_back = event.down and 1 or 0
             elseif event.key_id == LumixAPI.Keycode.A then
-                move_left = event.down and 1 or 0
+                camera.move_left = event.down and 1 or 0
             elseif event.key_id == LumixAPI.Keycode.D then
-                move_right = event.down and 1 or 0
+                camera.move_right = event.down and 1 or 0
             elseif event.key_id == LumixAPI.Keycode.Q then
-                zoom_in = event.down and 1 or 0
+                camera.zoom_in = event.down and 1 or 0
             elseif event.key_id == LumixAPI.Keycode.E then
-                zoom_out = event.down and 1 or 0
+                camera.zoom_out = event.down and 1 or 0
             end
         elseif event.device.type == "mouse" then
             if event.key_id == 0 and event.down then
                 -- Left mouse button click - select hex
-                if camera_entity and camera_entity.camera then
-                    local ray = camera_entity.camera:getRay(mouse_pos)
+                if camera.entity and camera.entity.camera then
+                    local ray = camera.entity.camera:getRay(mouse_pos)
                     
                     -- Intersect ray with ground plane (y = 0)
                     if ray.dir[2] ~= 0 then
@@ -719,8 +771,8 @@ function onInputEvent(event)
                                     new_model = "trees_A_cut.fbx" -- default
                                 end
                                 hovered_tree.model_instance.source = "hex/models/" .. new_model
-                                resources.wood = resources.wood + 4
-                                turn_actions = turn_actions - 1
+                                game_state.wood = game_state.wood + WOOD_PER_TREE
+                                game_state.turn_actions = game_state.turn_actions - 1
                                 update_ui()
                                 -- Mark as cut
                                 for _, feature in ipairs(hex.features) do
@@ -744,7 +796,7 @@ function onInputEvent(event)
                                     })
                                     -- deduct resources
                                     for res, amount in pairs(building_data.cost) do
-                                        resources[res] = resources[res] - amount
+                                        game_state[res] = game_state[res] - amount
                                     end
                                     -- remove existing features
                                     for _, feature in ipairs(hovered_hex.features) do
@@ -757,14 +809,14 @@ function onInputEvent(event)
                                     if building_data.one_time then
                                         for effect, value in pairs(building_data.one_time) do
                                             if effect == "population_limit" then
-                                                stats.max_population = stats.max_population + value
+                                                game_state.max_population = game_state.max_population + value
                                             elseif effect == "happiness" then
-                                                stats.happiness = stats.happiness + value
+                                                game_state.happiness = game_state.happiness + value
                                             end
                                         end
                                     end
                                     -- consume action
-                                    turn_actions = turn_actions - 1
+                                    game_state.turn_actions = game_state.turn_actions - 1
                                     -- exit mode
                                     building_placement_mode = false
                                     if building_preview then building_preview:destroy() building_preview = nil end
@@ -780,36 +832,30 @@ function onInputEvent(event)
                 end
             elseif event.key_id == 1 then
                 -- Right mouse button - start/stop panning
-                mouse_panning = event.down
+                camera.panning = event.down
                 if event.down then
-                    last_mouse_x = mouse_pos[1]
-                    last_mouse_y = mouse_pos[2]
-                    -- Hide cursor while panning
-                    local gui_system = this.world.gui:getSystem()
-                    gui_system:enableCursor(false)
-                else
-                    -- Show cursor when panning stops
-                    local gui_system = this.world.gui:getSystem()
-                    gui_system:enableCursor(true)
+                    camera.last_mouse_x = mouse_pos[1]
+                    camera.last_mouse_y = mouse_pos[2]
                 end
+                this.world.gui:getSystem():enableCursor(not event.down)
             end
         end
     end
 end
 
 function update(dt)
-    if not camera_entity then return end
+    if not camera.entity then return end
     
     local move_dir = {0, 0, 0}
     local zoom = 0
     
     -- Camera movement
-    move_dir[1] = move_dir[1] + move_right - move_left
-    move_dir[3] = move_dir[3] + move_back - move_forward
+    move_dir[1] = move_dir[1] + camera.move_right - camera.move_left
+    move_dir[3] = move_dir[3] + camera.move_back - camera.move_forward
     
     -- Zoom
-    zoom = zoom + zoom_out - zoom_in
-    zoom = zoom + zoom_wheel
+    zoom = zoom + camera.zoom_out - camera.zoom_in
+    zoom = zoom + camera.zoom_wheel
     
     -- Normalize movement direction
     local move_length = math.sqrt(move_dir[1] * move_dir[1] + move_dir[3] * move_dir[3])
@@ -819,38 +865,38 @@ function update(dt)
     end
     
     -- Apply camera movement
-    local pos = camera_entity.position
-    pos[1] = pos[1] + move_dir[1] * camera_speed * dt
-    pos[3] = pos[3] + move_dir[3] * camera_speed * dt
+    local pos = camera.entity.position
+    pos[1] = pos[1] + move_dir[1] * camera.speed * dt
+    pos[3] = pos[3] + move_dir[3] * camera.speed * dt
     
     -- Mouse panning
-    if mouse_panning then
-        local delta_x = mouse_pos[1] - last_mouse_x
-        local delta_y = mouse_pos[2] - last_mouse_y
+    if camera.panning then
+        local delta_x = mouse_pos[1] - camera.last_mouse_x
+        local delta_y = mouse_pos[2] - camera.last_mouse_y
         
         -- Apply mouse movement to camera position (inverted Y for natural feel)
-        pos[1] = pos[1] - delta_x * pan_sensitivity
-        pos[3] = pos[3] - delta_y * pan_sensitivity
+        pos[1] = pos[1] - delta_x * camera.pan_sensitivity
+        pos[3] = pos[3] - delta_y * camera.pan_sensitivity
         
         -- Update last mouse position
-        last_mouse_x = mouse_pos[1]
-        last_mouse_y = mouse_pos[2]
+        camera.last_mouse_x = mouse_pos[1]
+        camera.last_mouse_y = mouse_pos[2]
     end
     
     -- Clamp camera position to boundaries
-    pos[1] = math.max(camera_min_x, math.min(camera_max_x, pos[1]))
-    pos[3] = math.max(camera_min_z, math.min(camera_max_z, pos[3]))
+    pos[1] = math.max(camera.min_x, math.min(camera.max_x, pos[1]))
+    pos[3] = math.max(camera.min_z, math.min(camera.max_z, pos[3]))
     
     -- Apply zoom (change height)
-    local height = pos[2] + zoom * camera_zoom_speed * dt
-    height = math.max(camera_min_height, math.min(camera_max_height, height))
+    local height = pos[2] + zoom * camera.zoom_speed * dt
+    height = math.max(camera.min_height, math.min(camera.max_height, height))
     pos[2] = height
     
-    camera_entity.position = pos
+    camera.entity.position = pos
     
     -- Handle tree cutting mode hover
-    if tree_cutting_mode and camera_entity and camera_entity.camera then
-        local ray = camera_entity.camera:getRay(mouse_pos)
+    if tree_cutting_mode and camera.entity and camera.entity.camera then
+        local ray = camera.entity.camera:getRay(mouse_pos)
         if ray.dir[2] ~= 0 then
             local t = (0 - ray.origin[2]) / ray.dir[2]
             if t >= 0 then
@@ -887,28 +933,28 @@ function update(dt)
     
     -- Animate hovered tree
     if hovered_tree then
-        tree_animation_time = tree_animation_time + dt * 2.0
-        hovered_tree.position = {hovered_tree.position[1], math.sin(tree_animation_time) * 0.3, hovered_tree.position[3]}
+        tree_animation_time = tree_animation_time + dt * TREE_ANIMATION_SPEED
+        hovered_tree.position = {hovered_tree.position[1], math.sin(tree_animation_time) * TREE_HOVER_HEIGHT, hovered_tree.position[3]}
     end
 
     -- Animate build UI panel
-    if build_panel then
-        build_ui_animation_time = build_ui_animation_time + dt
-        local t = math.min(build_ui_animation_time / build_ui_animation_duration, 1)
-        local target_left = build_ui_visible and -300 or 0
-        local current_left = build_panel.gui_rect.left_points
-        build_panel.gui_rect.left_points = current_left + (target_left - current_left) * t * 4  -- *4 for faster animation
-        if not build_ui_visible and t >= 1 then
+    if ui.build_panel then
+        ui.build_ui_animation_time = ui.build_ui_animation_time + dt
+        local t = math.min(ui.build_ui_animation_time / ui.build_ui_animation_duration, 1)
+        local target_top = ui.build_ui_visible and -400 or -80
+        local current_top = ui.build_panel.gui_rect.top_points
+        ui.build_panel.gui_rect.top_points = current_top + (target_top - current_top) * t * BUILD_UI_ANIMATION_SPEED_MULTIPLIER
+        if not ui.build_ui_visible and t >= 1 then
             -- Destroy panel when fully hidden
-            build_panel:destroy()
-            build_panel = nil
-            build_buttons = {}
+            ui.build_panel:destroy()
+            ui.build_panel = nil
+            ui.build_buttons = {}
         end
     end
 
     -- Handle building placement mode hover
-    if building_placement_mode and camera_entity and camera_entity.camera then
-        local ray = camera_entity.camera:getRay(mouse_pos)
+    if building_placement_mode and camera.entity and camera.entity.camera then
+        local ray = camera.entity.camera:getRay(mouse_pos)
         if ray.dir[2] ~= 0 then
             local t = (0 - ray.origin[2]) / ray.dir[2]
             if t >= 0 then
@@ -945,6 +991,6 @@ function update(dt)
     end
 
     -- Reset wheel zoom
-    zoom_wheel = 0
+    camera.zoom_wheel = 0
 end
 

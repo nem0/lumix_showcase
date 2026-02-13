@@ -1090,9 +1090,10 @@ function movePiece(piece, to_x, to_z)
     if piece.current_y > piece.anim_target_pos[2] + 0.01 then
         piece.anim_lift = 0
     else
-        piece.anim_lift = 0.5
+        piece.anim_lift = (current_turn == AI_PLAYER) and 1.0 or 0.5  -- Higher lift for AI moves
     end
     piece.anim_time = 0
+    piece.anim_duration = (current_turn == AI_PLAYER) and 1.0 or 0.5  -- Slower animation for AI moves
     piece.animating = true
     -- Don't set base_pos yet, animation will handle it
 end

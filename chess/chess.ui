@@ -1,0 +1,21 @@
+[style] {
+	.button {
+		bg-color: #aaaaaa;
+		padding: 0.2em;
+		width: 5em;
+		align: center;
+	}
+	.button:hover {
+		bg-color: #777777;
+	}
+}
+
+[box width=100% 
+	height=100%
+	font="/engine/editor/fonts/JetBrainsMono-Regular.ttf"
+	font-size=60]
+{ 
+	[box width=100% align=center padding=0.2em] { [span $turn text="White's turn"] }
+	[box on-click=undo .button position=bottom-left] { Undo }
+	[box on-click=restart .button position=bottom-right] { Restart }
+}

@@ -34,8 +34,8 @@ The chess set comes from OpenGameArt and is licensed under Creative Commons Attr
 
 ## Project Structure
 
-- `chess.lua`: Main game script
-- `math.lua`: Small math helpers used by the script
+- `chess.evox`: Main game script
+- `chess.ui`: Undo/restart interface
 - `Chess_Set/`: Chess set meshes/materials/textures
 - `chess.unv`: Scene
 - `screenshot.png`: Project screenshot

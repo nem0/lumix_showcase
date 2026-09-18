@@ -1,0 +1,13 @@
+import "core:input"
+import "core:world"
+import "chess/chess" as chess
+import "asteroids/asteroids" as asteroids
+
+fn main(input : InputSystem, w : World) : void {
+	var name = w.getPartitionName(w.getPartitionHandle(0));
+	match name {
+		case "chess/chess.unv": chess.main(input, w);
+		case "asteroids/asteroids.unv": asteroids.main(input, w);
+		case: panic("Unknown world");
+	}
+}

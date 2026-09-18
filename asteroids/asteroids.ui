@@ -1,0 +1,16 @@
+// Current UI equivalent of the upstream Lua gui_canvas and gui_* entities.
+[box width=100% height=100% font="ui/font/Kenney Future.ttf" font-size=48 color=#ffffff] {
+	[box position=absolute left=10 top=10] { [span text="Score: 0" $score] }
+	[box position=absolute left=10 top=60] { [span text="Lives: 3" $lives] }
+	[box position=absolute left=100% pivot-x=100% top=10 width=240] { [span text="Wave: 1" $wave] }
+	[box position=absolute left=50% pivot-x=50% top=10 width=400 font-size=36] { [span text="" $powerup] }
+	[box position=absolute left=10 top=115 width=220 height=14 bg-color=#1a1a1ab3] {
+		[box position=absolute left=2 top=2 width=216 height=10 bg-color=#33d9ffe6 $boost] {}
+	}
+	[box position=absolute left=50% pivot-x=50% top=50% pivot-y=50% width=800 height=100 align=center font-size=60 visible=false $gameover] {
+		GAME OVER - Press R to Restart
+	}
+	[box position=absolute left=50% pivot-x=50% top=50% width=720 height=120 align=center font-size=44 visible=false $crash] {
+		[box position=absolute top=30 width=100% height=60 align=center] { Press R to Respawn }
+	}
+}

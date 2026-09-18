@@ -1,0 +1,802 @@
+// Behavioral port of upstream asteroids/asteroids.lua.
+// Legacy gui_* entities are represented by asteroids.ui in the current engine.
+import "std:math" as math
+import "core:random" as random
+import "core:array" as arr
+import "core:world"
+import "core:entity"
+import "core:vec3"
+import "core:quat"
+import "core:camera"
+import "core:model_instance"
+import "core:particle_emitter"
+import "core:environment"
+import "core:input"
+import "core:inputdevicetype"
+import "core:Keycode"
+import "core:ui"
+import "core:uisystem"
+import "core:document"
+import "core:element"
+
+comptime PI: f32 = 3.141592653589793;
+comptime WORLD_EXTENT: f32 = 32;
+comptime SHIP_RADIUS: f32 = 1.5;
+comptime SHIP_INVULN_TIME: f32 = 2;
+const SHIP_MODEL = "asteroids/models/Vehicles/Spaceship_RaeTheRedPanda.fbx";
+const SPHERE_MODEL = "/engine/models/sphere.fbx";
+const VFX_THRUST = "asteroids/particles/ship_exhaust.pat";
+const VFX_TRAIL = "asteroids/particles/projectile_trail.pat";
+const VFX_MUZZLE = "asteroids/particles/muzzle_flash.pat";
+const VFX_HIT = "asteroids/particles/hit_spark.pat";
+const VFX_EXPLOSION = "asteroids/particles/explosion.pat";
+
+struct RockModel {
+    path: [] const u8;
+    radius: f32;
+}
+
+const LARGE_MODELS: [3] RockModel = [
+    {"asteroids/models/Environment/Rock_Large_1.fbx", 4.7},
+    {"asteroids/models/Environment/Rock_Large_2.fbx", 5.9},
+    {"asteroids/models/Environment/Rock_Large_3.fbx", 4.4}
+];
+
+const SMALL_MODELS: [4] RockModel = [
+    {"asteroids/models/Environment/Rock_1.fbx", 2.1},
+    {"asteroids/models/Environment/Rock_2.fbx", 2.0},
+    {"asteroids/models/Environment/Rock_3.fbx", 2.2},
+    {"asteroids/models/Environment/Rock_4.fbx", 1.8}
+];
+
+const PLANET_MODELS = [
+"asteroids/models/Environment/Planet_1.fbx", "asteroids/models/Environment/Planet_2.fbx",
+"asteroids/models/Environment/Planet_3.fbx", "asteroids/models/Environment/Planet_4.fbx",
+"asteroids/models/Environment/Planet_5.fbx", "asteroids/models/Environment/Planet_6.fbx",
+"asteroids/models/Environment/Planet_7.fbx", "asteroids/models/Environment/Planet_8.fbx",
+"asteroids/models/Environment/Planet_9.fbx", "asteroids/models/Environment/Planet_10.fbx",
+"asteroids/models/Environment/Planet_11.fbx"
+];
+
+enum Power {
+    NONE, RAPID, SHIELD, LIFE
+}
+
+struct PickupType {
+    id: Power;
+    model: [] const u8;
+    duration: f32;
+    label: [] const u8;
+}
+
+const PICKUP_TYPES: [3] PickupType = [
+    {.RAPID, "asteroids/models/Items/Pickup_Thunder.fbx", 8, "Rapid Fire"},
+    {.SHIELD, "asteroids/models/Items/Pickup_Sphere.fbx", 10, "Shield"},
+    {.LIFE, "asteroids/models/Items/Pickup_Health.fbx", 0, "+1 Life"}
+];
+
+struct Ship {
+    entity: ? Entity;
+    pos: Vec3;
+    vel: Vec3;
+    rot: f32;
+    fire_timer: f32;
+    invuln: f32;
+    shield: bool;
+    thrust_vfx: ? Entity;
+    boost_energy: f32;
+}
+
+struct Bullet {
+    entity: Entity;
+    pos: Vec3;
+    vel: Vec3;
+    ttl: f32;
+}
+
+struct Asteroid {
+    entity: Entity;
+    pos: Vec3;
+    vel: Vec3;
+    large: bool;
+    radius: f32;
+    rotation: Quat;
+    angular_vel: Vec3;
+}
+
+struct Pickup {
+    entity: Entity;
+    pos: Vec3;
+    base_pos: Vec3;
+    kind: PickupType;
+    drift_vel: Vec3;
+    bob_phase: f32;
+    bob_speed: f32;
+    bob_amp: f32;
+    spin: f32;
+    spin_speed: f32;
+    base_rot: Quat;
+}
+
+struct Vfx {
+    entity: Entity;
+    ttl: f32;
+}
+
+struct Controls {
+    w: bool;
+    a: bool;
+    s: bool;
+    d: bool;
+    space: bool;
+    shift: bool;
+    restart: bool;
+    pad_restart: bool;
+    turn: f32;
+    thrust: f32;
+    boost: f32;
+    shoot: f32;
+}
+
+var world: World = {
+    null
+};
+var ship: Ship = {
+    null, {
+        0, 0, 0
+    }, {
+        0, 0, 0
+    }, 0, 0, 0, false, null, 2
+};
+var controls: Controls = {
+    false, false, false, false, false, false, false, false, 0, 0, 0, 0
+};
+var bullets = arr.init(Bullet);
+var asteroids = arr.init(Asteroid);
+var pickups = arr.init(Pickup);
+var vfx_entities = arr.init(Vfx);
+var game_camera: ? Camera = null;
+var extent_x: f32 = WORLD_EXTENT;
+var world_extents_ready = false;
+var background_spawned = false;
+var score: i32 = 0;
+var lives: i32 = 3;
+var wave: i32 = 1;
+var game_over = false;
+var crash_waiting = false;
+var pickup_timer: f32 = 6;
+var power: Power =.NONE;
+var power_timer: f32 = 0;
+var power_label: [] const u8 = "";
+
+fn minimum(a: f32, b: f32): f32 {
+    return a < b ? a: b;
+}
+
+fn maximum(a: f32, b: f32): f32 {
+    return a > b ? a: b;
+}
+
+fn randRange(a: f32, b: f32): f32 {
+    return random.randFloatRange(a, b);
+}
+
+fn position(e: Entity, p: Vec3): void {
+    e.setPosition({ p.x as f64, p.y as f64, p.z as f64 });
+}
+
+fn destroyOptional(e: ? Entity): void {
+    if const value = e {
+        value.destroy();
+    }
+}
+
+fn model(path: [] const u8, p: Vec3, scale: f32): Entity {
+    const e = world.createEntity();
+    position(e, p);
+    e.setScale({ scale, scale, scale });
+    const m = e.createModelInstance() else panic("Missing renderer");
+    m.setPath(path);
+    return e;
+}
+
+fn particle(path: [] const u8, p: Vec3, autodestroy: bool): Entity {
+    const e = world.createEntity();
+    position(e, p);
+    const emitter = e.createParticleEmitter() else panic("Missing renderer");
+    emitter.setPath(path);
+    emitter.setAutodestroy(autodestroy);
+    return e;
+}
+
+fn spawnVfx(path: [] const u8, p: Vec3, ttl: f32): void {
+    arr.push(& vfx_entities, Vfx { particle(path, p, true), ttl });
+}
+// Ordered removal matches table.remove, including reverse collision iteration.
+
+fn remove(list: * arr.Array($ T), index: isize): void {
+    for i in index .. list.size - 1 {
+        list.values[i] = list.values[i + 1];
+    }
+    list.size -= 1;
+}
+
+fn clearEntities(list: * arr.Array($ T)): void {
+    for item in arr.slice(list.*) {
+        item.entity.destroy();
+    }
+    arr.clear(list);
+}
+
+fn wrap(p: * Vec3): bool {
+    var wrapped = false;
+    if p.x > extent_x {
+        p.x =-extent_x;
+        wrapped = true;
+    }
+    if p.x < - extent_x {
+        p.x = extent_x;
+        wrapped = true;
+    }
+    if p.z > WORLD_EXTENT {
+        p.z =-WORLD_EXTENT;
+        wrapped = true;
+    }
+    if p.z < - WORLD_EXTENT {
+        p.z = WORLD_EXTENT;
+        wrapped = true;
+    }
+    return wrapped;
+}
+
+fn refreshWorldExtents(): bool {
+    const c = game_camera else return false;
+    const width = c.getScreenWidth();
+    const height = c.getScreenHeight();
+    if width <= 0 or height <= 0 {
+        return false;
+    }
+    extent_x = WORLD_EXTENT * width / height;
+    return true;
+}
+
+fn spawnBackground(): void {
+    for i in 0 .. 200 {
+        model(SPHERE_MODEL, { randRange(-extent_x, extent_x), randRange(-20, -15), randRange(-WORLD_EXTENT, WORLD_EXTENT) }, 0.1);
+    }
+    for i in 0 .. 2 {
+        const p: Vec3 = {
+            randRange(-extent_x, extent_x), randRange(-12, -8), randRange(-WORLD_EXTENT, WORLD_EXTENT)
+        };
+        const scale = randRange(2, 4.5);
+        const rotation = makeQuatFromYaw(randRange(0, PI * 2));
+        const e = model(PLANET_MODELS[random.randRange(0, 10)], p, scale);
+        e.setRotation(rotation);
+    }
+}
+
+fn resetThrustVfx(): void {
+    destroyOptional(ship.thrust_vfx);
+    ship.thrust_vfx = particle(VFX_THRUST, ship.pos - yawToDir(ship.rot) * 0.5, false);
+    if const e = ship.thrust_vfx {
+        e.setName("thrust_vfx");
+    }
+}
+
+fn resetShip(): void {
+    destroyOptional(ship.entity);
+    destroyOptional(ship.thrust_vfx);
+    ship.thrust_vfx = null;
+    ship.pos = {
+        0, 0, 0
+    };
+    ship.vel = {
+        0, 0, 0
+    };
+    ship.rot = 0;
+    ship.fire_timer = 0;
+    ship.invuln = SHIP_INVULN_TIME;
+    ship.shield = false;
+    ship.boost_energy = 2;
+    const e = model(SHIP_MODEL, ship.pos, 0.2);
+    ship.entity = e;
+    e.setRotation(makeQuatFromYaw(ship.rot));
+    resetThrustVfx();
+}
+
+fn spawnAsteroid(large: bool, p: Vec3, v: Vec3): void {
+    const rock = large ? LARGE_MODELS[random.randRange(0, 2)]: SMALL_MODELS[random.randRange(0, 3)];
+    const scale: f32 = large ? 0.6: 0.35;
+    const e = model(rock.path, p, scale);
+    var axis: Vec3 = {
+        randRange(-1, 1), randRange(-1, 1), randRange(-1, 1)
+    };
+    const len = length(axis);
+    axis = len > 0.001 ? axis / len: Vec3 {
+        0, 1, 0
+    };
+    arr.push(& asteroids, Asteroid { e, p, v, large, rock.radius * scale, { 0, 0, 0, 1 }, axis * randRange(0.5, 2) });
+}
+
+fn spawnWave(count: i32): void {
+    const min_extent = minimum(extent_x, WORLD_EXTENT);
+    for i in 0 .. count {
+        const angle = randRange(0, PI * 2);
+        const dist = randRange(min_extent * 0.6, min_extent * 0.95);
+        const p: Vec3 = {
+            math.cos(angle) * dist, 0, math.sin(angle) * dist
+        };
+        const speed = randRange(2.5, 4.5);
+        const dir: Vec3 = {
+            randRange(-1, 1), 0, randRange(-1, 1)
+        };
+        spawnAsteroid(true, p, dir / maximum(0.1, length(dir)) * speed);
+    }
+}
+
+fn spawnBullet(): void {
+    const forward = yawToDir(ship.rot);
+    const p = ship.pos + forward * 1.6;
+    const e = model(SPHERE_MODEL, p, 0.2);
+    const emitter = e.createParticleEmitter() else panic("Missing renderer");
+    emitter.setPath(VFX_TRAIL);
+    emitter.setAutodestroy(false);
+    spawnVfx(VFX_MUZZLE, p, 0.35);
+    arr.push(& bullets, Bullet { e, p, ship.vel + forward * 26, 1.3 });
+}
+
+fn spawnPickup(): void {
+    const kind = PICKUP_TYPES[random.randRange(0, 2)];
+    const p: Vec3 = {
+        randRange(-extent_x * 0.75, extent_x * 0.75), 0, randRange(-WORLD_EXTENT * 0.75, WORLD_EXTENT * 0.75)
+    };
+    const rotation = makeQuatFromPitch(-PI * 0.5);
+    const e = model(kind.model, p, 1.5);
+    e.setRotation(rotation);
+    arr.push(& pickups, Pickup { e, p, p, kind, { randRange(-0.6, 0.6), 0, randRange(-0.6, 0.6) },
+    randRange(0, PI * 2), randRange(1.2, 2), randRange(0.2, 0.5), randRange(0, PI * 2), randRange(1, 2), rotation });
+}
+
+fn clearPowerup(): void {
+    power =.NONE;
+    power_timer = 0;
+    power_label = "";
+}
+
+fn applyPickup(p: Pickup): void {
+    if p.kind.id == .SHIELD {
+        ship.shield = true;
+    }
+    if p.kind.id == .LIFE {
+        lives += 1;
+        return;
+    }
+    if p.kind.duration > 0 {
+        power = p.kind.id;
+        power_timer = p.kind.duration;
+        power_label = p.kind.label;
+    }
+}
+// Write numbers into caller-owned storage, avoiding dangling temporary strings.
+
+fn numberText(buffer: [] u8, prefix: [] const u8, number: i32, suffix: [] const u8): isize {
+    var end: isize = 0;
+    for c in prefix {
+        buffer[end] = c;
+        end += 1;
+    }
+    var digits: [16] u8 = undefined;
+    var count: isize = 0;
+    var n = number;
+    while true {
+        digits[count] =('0' as i32 + n % 10) as u8;
+        count += 1;
+        n /= 10;
+        if n == 0 {
+            break;
+        }
+    }
+    while count > 0 {
+        count -= 1;
+        buffer[end] = digits[count];
+        end += 1;
+    }
+    for c in suffix {
+        buffer[end] = c;
+        end += 1;
+    }
+    return end;
+}
+
+fn setNumber(doc: Document, id: [] const u8, prefix: [] const u8, value: i32, suffix: [] const u8): void {
+    const e = doc.getElementByID(id) else return;
+    var buffer: [128] u8 = undefined;
+    const count = numberText(buffer, prefix, value, suffix);
+    e.setText(buffer[:count]);
+}
+
+fn updateGui(): void {
+    const module = world.ui() else return;
+    if not module.isReady() {
+        return;
+    }
+    const doc = module.getDocument();
+    setNumber(doc, "score", "Score: ", score, "");
+    setNumber(doc, "lives", "Lives: ", lives, "");
+    setNumber(doc, "wave", "Wave: ", wave, "");
+    if const e = doc.getElementByID("powerup") {
+        if power != .NONE {
+            var buffer: [128] u8 = undefined;
+            var prefix: [64] u8 = undefined;
+            var len: isize = 0;
+            for c in power_label {
+                prefix[len] = c;
+                len += 1;
+            }
+            prefix[len] = ' ';
+            len += 1;
+            var seconds = power_timer as i32;
+            if seconds as f32 < power_timer {
+                seconds += 1;
+            }
+            const count = numberText(buffer, prefix[:len], seconds, "s");
+            e.setText(buffer[:count]);
+        } else {
+            e.setText("");
+        }
+    }
+    if const e = doc.getElementByID("gameover") {
+        e.setVisible(game_over);
+    }
+    if const e = doc.getElementByID("crash") {
+        e.setVisible(crash_waiting and not game_over);
+    }
+    if const e = doc.getElementByID("boost") {
+        var buffer: [32] u8 = undefined;
+        const width =(216 * maximum(0, minimum(1, ship.boost_energy / 2))) as i32;
+        const count = numberText(buffer, "", width, "");
+        e.setWidth(buffer[:count]);
+    }
+}
+
+fn resetGame(): void {
+    clearEntities(& bullets);
+    clearEntities(& asteroids);
+    clearEntities(& pickups);
+    // Emitters self-destruct; only clears their bookkeeping on reset.
+    arr.clear(& vfx_entities);
+    score = 0;
+    lives = 3;
+    wave = 1;
+    game_over = false;
+    crash_waiting = false;
+    clearPowerup();
+    pickup_timer = 6;
+    controls = {
+        false, false, false, false, false, false, false, false, 0, 0, 0, 0
+    };
+    resetShip();
+    spawnWave(4);
+    updateGui();
+}
+
+fn onInputEvent(event: InputEvent): void {
+    match event {
+        case ButtonEvent:
+        if event.device_type == .KEYBOARD {
+            match event.key_id as Keycode {
+                case .W: controls.w = event.down;
+                case .A: controls.a = event.down;
+                case .S: controls.s = event.down;
+                case .D: controls.d = event.down;
+                case .SPACE: controls.space = event.down;
+                case .SHIFT: controls.shift = event.down;
+                case .R: if event.down {
+                    controls.restart = true;
+                }
+                case:
+            }
+        } else if event.device_type == .GAMEPAD and event.key_id == 4 and event.down {
+            controls.pad_restart = true;
+        }
+        case AxisEvent:
+        if event.device_type == .GAMEPAD {
+            match event.axis {
+                case 3: controls.turn = event.x;
+                case 2: controls.thrust = event.y;
+                case 0: controls.boost = event.x;
+                case 1: controls.shoot = event.x;
+                case:
+            }
+        }
+        case:
+    }
+}
+
+fn consumeRestart(): bool {
+    if controls.restart {
+        controls.restart = false;
+        return true;
+    }
+    if controls.pad_restart {
+        controls.pad_restart = false;
+        return true;
+    }
+    return false;
+}
+
+fn updateShipTimers(dt: f32): void {
+    ship.fire_timer = maximum(0, ship.fire_timer - dt);
+    ship.invuln = maximum(0, ship.invuln - dt);
+    if power != .NONE {
+        power_timer = maximum(0, power_timer - dt);
+        if power_timer <= 0 {
+            clearPowerup();
+            ship.shield = false;
+        }
+    }
+}
+
+fn updateShipMovement(dt: f32): void {
+    var turn: f32 =-controls.turn;
+    if controls.a {
+        turn += 1;
+    }
+    if controls.d {
+        turn -= 1;
+    }
+    ship.rot += turn * 4.2 * dt;
+    const forward = yawToDir(ship.rot);
+    var thrust = controls.thrust;
+    if controls.w {
+        thrust += 1;
+    }
+    if controls.s {
+        thrust -= 0.6;
+    }
+    var boost_active = false;
+    if (controls.shift or controls.boost > 0.5) and ship.boost_energy > 0 and thrust > 0 {
+        boost_active = true;
+        ship.boost_energy = maximum(0, ship.boost_energy - 1.2 * dt);
+    } else {
+        ship.boost_energy = minimum(2, ship.boost_energy + 0.7 * dt);
+    }
+    const thrust_scale: f32 = boost_active ? 1.8: 1;
+    ship.vel += forward *(10 * thrust * thrust_scale * dt);
+    if const e = ship.thrust_vfx {
+        position(e, ship.pos - forward * 0.5);
+    } else {
+        resetThrustVfx();
+    }
+    ship.pos += ship.vel * dt;
+    const wrapped = wrap(& ship.pos);
+    if const e = ship.entity {
+        position(e, ship.pos);
+        e.setRotation(makeQuatFromYaw(ship.rot));
+    }
+    // Restart the ribbon at the new edge, rather than drawing across the screen.
+    if wrapped {
+        resetThrustVfx();
+    }
+}
+
+fn updateBullets(dt: f32): void {
+    var i = bullets.size;
+    while i > 0 {
+        i -= 1;
+        const b = & bullets.values[i];
+        b.ttl -= dt;
+        b.pos += b.vel * dt;
+        wrap(& b.pos);
+        position(b.entity, b.pos);
+        if b.ttl <= 0 {
+            b.entity.destroy();
+            remove(& bullets, i);
+        }
+    }
+}
+
+fn updateAsteroids(dt: f32): void {
+    var i = asteroids.size;
+    while i > 0 {
+        i -= 1;
+        const a = & asteroids.values[i];
+        a.pos += a.vel * dt;
+        wrap(& a.pos);
+        position(a.entity, a.pos);
+        const speed = length(a.angular_vel);
+        if speed > 0.001 {
+            const axis = a.angular_vel / speed;
+            const half = speed * dt * 0.5;
+            const s = math.sin(half);
+            a.rotation = Quat {
+                axis.x * s, axis.y * s, axis.z * s, math.cos(half)
+            }
+            * a.rotation;
+        }
+        a.entity.setRotation(a.rotation);
+    }
+}
+
+fn updatePickups(dt: f32): void {
+    var i = pickups.size;
+    while i > 0 {
+        i -= 1;
+        const p = & pickups.values[i];
+        p.base_pos += p.drift_vel * dt;
+        wrap(& p.base_pos);
+        p.bob_phase += p.bob_speed * dt;
+        p.spin += p.spin_speed * dt;
+        p.pos = p.base_pos;
+        p.pos.y += math.sin(p.bob_phase) * p.bob_amp;
+        position(p.entity, p.pos);
+        p.entity.setRotation(p.base_rot * makeQuatFromYaw(p.spin));
+        if distanceSquared(ship.pos, p.pos) <(SHIP_RADIUS + 1) *(SHIP_RADIUS + 1) {
+            applyPickup(p.*);
+            p.entity.destroy();
+            remove(& pickups, i);
+        }
+    }
+}
+
+fn handleBulletAsteroidHits(): void {
+    var i = bullets.size;
+    while i > 0 {
+        i -= 1;
+        const b = bullets.values[i];
+        var j = asteroids.size;
+        while j > 0 {
+            j -= 1;
+            // Copy before spawning fragments: growing the array invalidates pointers.
+            const a = asteroids.values[j];
+            if distanceSquared(b.pos, a.pos) < a.radius * a.radius {
+                b.entity.destroy();
+                remove(& bullets, i);
+                score += a.large ? 20: 50;
+                spawnVfx(VFX_HIT, a.pos, 0.6);
+                spawnVfx(VFX_EXPLOSION, a.pos, 1.6);
+                if a.large {
+                    const angle = randRange(0, PI * 2);
+                    const speed = randRange(3.5, 6);
+                    const dir: Vec3 = {
+                        math.cos(angle), 0, math.sin(angle)
+                    };
+                    spawnAsteroid(false, a.pos, dir * speed);
+                    spawnAsteroid(false, a.pos, -dir * speed);
+                }
+                a.entity.destroy();
+                remove(& asteroids, j);
+                return;
+                // processes only one bullet/asteroid hit per frame.
+            }
+        }
+    }
+}
+
+fn handleShipAsteroidCollisions(): void {
+    if ship.invuln > 0 {
+        return;
+    }
+    var i = asteroids.size;
+    while i > 0 {
+        i -= 1;
+        const a = asteroids.values[i];
+        const radius = SHIP_RADIUS + a.radius;
+        if distanceSquared(ship.pos, a.pos) < radius * radius {
+            if ship.shield {
+                ship.shield = false;
+                clearPowerup();
+                ship.invuln = SHIP_INVULN_TIME;
+                spawnVfx(VFX_HIT, ship.pos, 0.6);
+            } else {
+                spawnVfx(VFX_EXPLOSION, ship.pos, 1.6);
+                lives -= 1;
+                if lives <= 0 {
+                    game_over = true;
+                }
+                else {
+                    destroyOptional(ship.entity);
+                    ship.entity = null;
+                    crash_waiting = true;
+                }
+            }
+            a.entity.destroy();
+            remove(& asteroids, i);
+            return;
+        }
+    }
+}
+
+fn update(dt: f32): void {
+    if not world_extents_ready {
+        world_extents_ready = refreshWorldExtents();
+    }
+    if world_extents_ready and not background_spawned {
+        spawnBackground();
+        background_spawned = true;
+    }
+    if crash_waiting {
+        if consumeRestart() {
+            crash_waiting = false;
+            resetShip();
+        }
+        updateGui();
+        return;
+    }
+    if ship.entity == null {
+        return;
+    }
+    var i = vfx_entities.size;
+    while i > 0 {
+        i -= 1;
+        vfx_entities.values[i].ttl -= dt;
+        if vfx_entities.values[i].ttl <= 0 {
+            remove(& vfx_entities, i);
+        }
+    }
+    if game_over {
+        if consumeRestart() {
+            resetGame();
+        }
+        updateGui();
+        return;
+    }
+    updateShipTimers(dt);
+    updateShipMovement(dt);
+    // Upstream fires while held, once per cooldown, with no queued press.
+    if (controls.space or controls.shoot > 0.5) and ship.fire_timer <= 0 {
+        spawnBullet();
+        ship.fire_timer = power == .RAPID ? 0.15: 0.35;
+    }
+    pickup_timer -= dt;
+    if pickup_timer <= 0 and pickups.size < 3 {
+        spawnPickup();
+        pickup_timer = randRange(8, 14);
+    }
+    updateBullets(dt);
+    updateAsteroids(dt);
+    updatePickups(dt);
+    handleBulletAsteroidHits();
+    handleShipAsteroidCollisions();
+    if asteroids.size == 0 {
+        wave += 1;
+        spawnWave(3 + wave);
+    }
+    updateGui();
+}
+
+fn main(input: InputSystem, w: World): void {
+    world = w;
+    defer arr.deinit(& bullets);
+    defer arr.deinit(& asteroids);
+    defer arr.deinit(& pickups);
+    defer arr.deinit(& vfx_entities);
+    const e = world.createEntity();
+    e.setName("camera");
+    e.setPosition({ 0, 100, 0 });
+    e.setRotation(makeQuatFromYaw(PI) * makeQuatFromPitch(PI * 0.5));
+    const c = e.createCamera() else panic("Missing renderer");
+    game_camera = c;
+    c.setIsOrtho(true);
+    c.setOrthoSize(WORLD_EXTENT);
+    world_extents_ready = refreshWorldExtents();
+    const light = world.createEntity();
+    light.setName("key_light");
+    light.setRotation(makeQuatFromPitch(-0.6));
+    const env = light.createEnvironment() else panic("Missing renderer");
+    env.setDirectIntensity(2);
+    env.setLightColor({ 1, 1, 1 });
+    env.setAtmoEnabled(false);
+    if const module = world.ui() {
+        module.load("asteroids/asteroids.ui");
+        module.getSystem().enableCursor(false);
+    }
+    resetGame();
+    while true {
+        const dt: f32 = yield;
+        for event in input.getEvents() {
+            onInputEvent(event);
+        }
+        update(dt);
+    }
+}

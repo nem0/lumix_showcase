@@ -1,0 +1,621 @@
+// TODO
+// Audio: jump, death, coin, and life pickup sounds
+// Music checkbox icon: switching checked/unchecked images
+ 
+import "core:entity"
+import "core:event"
+import "core:input"
+import "core:keycode"
+import "core:physical_controller" as phy_ctrl
+import "core:ui"
+import "core:uisystem"
+import "core:world"
+import "core:attributes" as attr
+import "core:animator" as animator
+import "core:ambient_sound" as ambient_sound
+import "core:physics" as physics
+import "core:dvec3"
+import "core:vec3"
+import "core:model_instance"
+import "std:math" as math
+
+operator ==(a : Entity, b : Entity) : bool {
+	return a.index == b.index and a.world == b.world;
+}
+
+#[attr.Data{}]
+struct Player {
+	#[attr.Owner{}]
+	owner : Entity;
+}
+
+#[attr.Data{}]
+struct Lever {
+	#[attr.Owner{}]
+	owner : Entity;
+	platform : Entity;
+	active : bool;
+	show_msg : bool;
+	initialized : bool;
+}
+
+#[attr.Data{}]
+struct Spikes {
+	#[attr.Owner{}]
+	owner : Entity;
+}
+
+#[attr.Data{}]
+struct Checkpoint {
+	#[attr.Owner{}]
+	owner : Entity;
+	base_position : DVec3;
+	animation : f32;
+	initialized : bool;
+	activated : bool;
+}
+
+
+#[attr.Data{}]
+struct Coin {
+	#[attr.Owner{}]
+	owner : Entity;
+	picked : bool;
+	a : f32;
+}
+
+#[attr.Data{}]
+struct BearTrap {
+	#[attr.Owner{}]
+	owner : Entity;
+	active : bool;
+	initialized : bool;
+}
+
+#[attr.Data{}]
+struct Life {
+	#[attr.Owner{}]
+	owner : Entity;
+	picked : bool;
+	a : f32;
+}
+
+#[attr.Data{}]
+struct TutorialLever {
+	#[attr.Owner{}]
+	owner : Entity;
+	blinking : bool;
+	t : f32;
+	base_scale : Vec3;
+	initialized : bool;
+}
+
+#[attr.Data{}]
+struct MovingPlatform {
+	#[attr.Owner{}]
+	owner : Entity;
+	from : Entity;
+	to : Entity;
+	speed : f32;
+	t : f32;
+}
+
+var go_left = false;
+var go_right = false;
+var slow = false;
+var is_collision_down = false;
+var jump : f32 = 0;
+var speed : f32 = 10;
+var vspeed : f32 = 0;
+var speed_input_idx : i32 = -1;
+var jump_input_idx : i32 = -1;
+var dead_input_idx : i32 = -1;
+var dead = false;
+var interact_obj : ?Entity = null;
+var checkpoint : ?Entity = null;
+var start_position : DVec3 = DVec3 {0, 0, 0};
+var start_initialized = false;
+var coins : i32 = 0;
+var lives : i32 = 3;
+var total_time : f32 = 0;
+var menu_open = false;
+var paused = false;
+var music_enabled = true;
+
+fn restart(world : World) : void {
+	const players = world.getEvoxData(Player);
+	const player = players[0].owner;
+	const controller = player.getParent() else return;
+	controller.setPosition(start_position);
+	dead = false;
+}
+
+fn respawn(world : World) : void {
+	const players = world.getEvoxData(Player);
+	const player = players[0].owner;
+	const controller = player.getParent() else return;
+	if const point = checkpoint {
+		controller.setPosition(point.getPosition());
+	}
+	else {
+			controller.setPosition(start_position);
+	}
+	showUI(world, "respawn", false);
+	dead = false;
+}
+
+fn showUI(world : World, id : []const u8, show : bool) : void {
+	const ui = world.ui() else return;
+	const elem = ui.getDocument().getElementByID(id) else return;
+	elem.setVisible(show);
+}
+
+fn updateCoinsUI(world : World) : void {
+	const ui = world.ui() else return;
+	const elem = ui.getDocument().getElementByID("coins") else return;
+	var digits : [16] u8 = undefined;
+	var value = coins;
+	var count : i32 = 0;
+	if value == 0 {
+		digits[0] = '0' as u8;
+		count = 1;
+	}
+	else {
+		while value > 0 {
+			digits[count] = ('0' as i32 + value % 10) as u8;
+			count += 1;
+			value /= 10;
+		}
+		var i : i32 = 0;
+		while i < count / 2 {
+			const other = count - i - 1;
+			const tmp = digits[i];
+			digits[i] = digits[other];
+			digits[other] = tmp;
+			i += 1;
+		}
+	}
+	elem.setText(digits[:count]);
+}
+
+fn interact(world : World) : void {
+	const lever_entity = interact_obj else return;
+	for &lever in world.getEvoxData(Lever) {
+		if not (lever.owner == lever_entity) {
+			continue;
+		}
+		lever.active = not lever.active;
+		if lever.active {
+			for &platform in world.getEvoxData(MovingPlatform) {
+				if platform.owner == lever.platform {
+					platform.speed = 0.7;
+				}
+			}
+			lever.owner.setRotation({0, 0, 0.25, 0.866});
+		}
+		else {
+			lever.show_msg = false;
+			showUI(world, "interact", false);
+			for &platform in world.getEvoxData(MovingPlatform) {
+				if platform.owner == lever.platform {
+					platform.speed = 0;
+				}
+			}
+			lever.owner.setRotation({0, 0, 0, 1});
+		}
+	}
+}
+
+fn updateTimeUI(world : World) : void {
+	const ui = world.ui() else return;
+	const elem = ui.getDocument().getElementByID("time") else return;
+	if total_time > 3600 {
+		elem.setText("way too much");
+		return;
+	}
+	var text : [16] u8 = undefined;
+	const minutes = (total_time / 60) as i32;
+	const seconds = total_time as i32 % 60;
+	if minutes >= 10 {
+		text[0] = ('0' as i32 + minutes / 10) as u8;
+		text[1] = ('0' as i32 + minutes % 10) as u8;
+		text[2] = ':';
+		text[3] = ('0' as i32 + seconds / 10) as u8;
+		text[4] = ('0' as i32 + seconds % 10) as u8;
+		elem.setText(text[:5]);
+	}
+	else {
+		text[0] = ('0' as i32 + minutes) as u8;
+		text[1] = ':';
+		text[2] = ('0' as i32 + seconds / 10) as u8;
+		text[3] = ('0' as i32 + seconds % 10) as u8;
+		elem.setText(text[:4]);
+	}
+}
+
+fn updateTutorialLevers(world : World, td : f32) : void {
+	for &lever in world.getEvoxData(TutorialLever) {
+		if not lever.initialized {
+			lever.base_scale = lever.owner.getScale();
+			lever.initialized = true;
+		}
+		if lever.blinking {
+			lever.t += td;
+			const factor = 1.0 + 0.1 * math.cos(lever.t * 5.0);
+			lever.owner.setScale(lever.base_scale * factor);
+		}
+	}
+}
+
+fn updateCoins(world : World, td : f32) : void {
+	for &coin in world.getEvoxData(Coin) {
+		coin.a = coin.a + td;
+		coin.owner.setRotation({0, math.sin(coin.a), 0, math.cos(coin.a)});
+	}
+	for &life in world.getEvoxData(Life) {
+		life.a = life.a + td;
+		life.owner.setRotation({0, math.sin(life.a), 0, math.cos(life.a)});
+	}
+}
+
+fn updateLivesUI(world : World) : void {
+	showUI(world, "life0", lives > 0);
+	showUI(world, "life1", lives > 1);
+	showUI(world, "life2", lives > 2);
+}
+
+fn updateCheckpoints(world : World, td : f32) : void {
+	for &checkpoint_data in world.getEvoxData(Checkpoint) {
+		if not checkpoint_data.initialized {
+			checkpoint_data.base_position = checkpoint_data.owner.getPosition();
+			checkpoint_data.initialized = true;
+		}
+		if checkpoint_data.activated and checkpoint_data.animation < 1 {
+			checkpoint_data.animation += td / 0.5;
+			if checkpoint_data.animation > 1 {
+				checkpoint_data.animation = 1;
+			}
+		}
+		const offset = (checkpoint_data.animation as f64) * 0.2;
+		checkpoint_data.owner.setPosition(checkpoint_data.base_position + DVec3 {0, -offset, 0});
+	}
+}
+
+fn updatePlatforms(world : World, td : f32) : void {
+	for &platform in world.getEvoxData(MovingPlatform) {
+		platform.t = platform.t + td * platform.speed;
+		while platform.t >= 2 {
+			platform.t = platform.t - 2;
+		}
+		while platform.t < 0 {
+			platform.t = platform.t + 2;
+		}
+		var f : f32 = platform.t;
+		if f > 1 {
+			f = 2 - f;
+		}
+
+		const from = platform.from.getPosition();
+		const to = platform.to.getPosition();
+		const factor = f as f64;
+		platform.owner.setPosition(from * (1.0 - factor) + to * factor);
+	}
+}
+
+fn killPlayer(world : World) : void {
+	if dead { return; }
+	dead = true;
+	lives -= 1;
+	updateLivesUI(world);
+	if lives > 0 {
+		showUI(world, "respawn", true);
+	}
+	else {
+		showUI(world, "gameover", true);
+	}
+}
+
+fn processTriggers(world : World) : void {
+	const players = world.getEvoxData(Player);
+	const player = players[0].owner;
+	const controller = player.getParent() else return;
+	if not start_initialized {
+		const start = world.findByName("start") else panic("Missing start entity");
+		start_position = start.getPosition();
+		start_initialized = true;
+		controller.setPosition(start_position);
+	}
+	const module = physics.physics(world) else return;
+
+	const fall_trigger = world.findByName("fall_trigger") else panic("Missing fall_trigger entity");
+	for hit in module.getTriggerHits() {
+		const player_touch = hit.e1 == player or hit.e2 == player
+			or hit.e1 == controller or hit.e2 == controller;
+		if (hit.e1 == fall_trigger or hit.e2 == fall_trigger) and player_touch and not hit.touch_lost {
+			killPlayer(world);
+		}
+
+		for &life in world.getEvoxData(Life) {
+			const life_hit = hit.e1 == life.owner or hit.e2 == life.owner;
+			const player_hit = hit.e1 == player or hit.e2 == player
+				or hit.e1 == controller or hit.e2 == controller;
+			if life_hit and player_hit and not hit.touch_lost and not life.picked and lives < 3 {
+				life.picked = true;
+				lives += 1;
+				updateLivesUI(world);
+				if const model = life.owner.model_instance() {
+					model.setEnabled(false);
+				}
+			}
+		}
+
+		for &coin in world.getEvoxData(Coin) {
+			const coin_hit = hit.e1 == coin.owner or hit.e2 == coin.owner;
+			const player_hit = hit.e1 == player or hit.e2 == player
+				or hit.e1 == controller or hit.e2 == controller;
+			if coin_hit and player_hit and not hit.touch_lost and not coin.picked {
+				coin.picked = true;
+				coins += 1;
+				updateCoinsUI(world);
+				if const model = coin.owner.model_instance() {
+					model.setEnabled(false);
+				}
+			}
+		}
+
+		for &trap in world.getEvoxData(BearTrap) {
+			if not trap.initialized {
+				trap.active = true;
+				trap.initialized = true;
+			}
+			const trap_hit = hit.e1 == trap.owner or hit.e2 == trap.owner;
+			const player_hit = hit.e1 == player or hit.e2 == player
+				or hit.e1 == controller or hit.e2 == controller;
+			if trap.active and trap_hit and player_hit and not hit.touch_lost {
+				trap.active = false;
+				if const model = trap.owner.model_instance() {
+					model.setPath("platformer/models/BearTrap_Closed.fbx");
+				}
+				killPlayer(world);
+			}
+		}
+
+		for &spike in world.getEvoxData(Spikes) {
+			const spike_hit = hit.e1 == spike.owner or hit.e2 == spike.owner;
+			const player_hit = hit.e1 == player or hit.e2 == player
+				or hit.e1 == controller or hit.e2 == controller;
+			if spike_hit and player_hit and not hit.touch_lost {
+				killPlayer(world);
+			}
+		}
+
+		for &checkpoint_data in world.getEvoxData(Checkpoint) {
+			const checkpoint_hit = hit.e1 == checkpoint_data.owner or hit.e2 == checkpoint_data.owner;
+			const player_hit = hit.e1 == player or hit.e2 == player
+				or hit.e1 == controller or hit.e2 == controller;
+			if checkpoint_hit and player_hit and not hit.touch_lost {
+				checkpoint = checkpoint_data.owner;
+				checkpoint_data.activated = true;
+			}
+		}
+
+		for &lever in world.getEvoxData(Lever) {
+			if not lever.initialized {
+				lever.show_msg = true;
+				lever.initialized = true;
+			}
+			const lever_hit = hit.e1 == lever.owner or hit.e2 == lever.owner;
+			const player_hit = hit.e1 == player or hit.e2 == player
+				or hit.e1 == controller or hit.e2 == controller;
+			if not lever_hit or not player_hit { continue; }
+			if hit.touch_lost {
+				if const current = interact_obj {
+					if current == lever.owner {
+						showUI(world, "interact", false);
+						interact_obj = null;
+					}
+				}
+			}
+			else {
+				interact_obj = lever.owner;
+				if lever.show_msg {
+					showUI(world, "interact", true);
+				}
+			}
+		}
+	}
+}
+
+fn handleEvents(input : InputSystem, world : World) : void {
+	for event in input.getEvents() {
+		match event {
+			case ButtonEvent: {
+				if event.device_type == .KEYBOARD {
+					match event.key_id as Keycode {
+						case .A: go_left = event.down;
+						case .D: go_right = event.down;
+						case .SHIFT: slow = event.down;
+						case .M: if event.down {
+							menu_open = not menu_open;
+							paused = menu_open;
+							showUI(world, "menu", menu_open);
+							showCursor(world, menu_open);
+						}
+						case .E: if event.down { interact(world); }
+						case .R: if event.down and dead and lives > 0 { respawn(world); }
+						case .SPACE: if event.down and not dead and is_collision_down { jump = 1; }
+						case .W: if event.down and not dead and is_collision_down { jump = 1; }
+						case:
+					}
+				}
+			}
+			case:
+		}
+	}
+}
+
+fn setMusicEnabled(world : World, enabled : bool) : void {
+	const environment = world.findByName("environment") else panic("Missing environment entity");
+	const music_entity = environment.findChildByName("music") else panic("Missing music entity");
+	const music = ambient_sound.ambient_sound(music_entity) else panic("Missing ambient sound");
+	if enabled {
+		ambient_sound.resume(music);
+	}
+	else {
+		ambient_sound.pause(music);
+	}
+}
+
+fn showCursor(world : World, show : bool) : void {
+	const ui = world.ui() else panic("Missing UI");
+	const system = ui.getSystem();
+	system.enableCursor(show);
+}
+
+fn handleUIEvents(world : World) : void {
+	const ui = world.ui() else panic("Missing UI");
+	const doc = ui.getDocument();
+	const events = doc.getEvents();
+
+	for e in events {
+		match e.action {
+			case "exit": {
+				menu_open = false;
+				paused = false;
+				showUI(world, "menu", false);
+				showCursor(world, false);
+			}
+			case "music_checkbox": {
+				music_enabled = not music_enabled;
+				setMusicEnabled(world, music_enabled);
+			}
+			case "restart": {
+				restart(world);
+				menu_open = false;
+				paused = false;
+				showUI(world, "menu", false);
+				showCursor(world, false);
+			}
+		}
+	}
+
+	//for _, e in ipairs(events) do
+	//	if e.type == LumixAPI.EventType.ACTION then
+	//		if e.action == "exit" then
+	//			local elem = doc:getElementByID("menu")
+	//			elem:setVisible(false)
+	//		elseif e.action == "music_checkbox" then
+	//			play_music = not play_music
+	//			local element = doc:getElement(e.element_index)
+	//			if play_music then
+	//				element:setBGImage("platformer/gui/grey_boxcheckmark.spr")
+	//    			music_entity.ambient_sound:resume()				
+	//			else
+	//				element:setBGImage("platformer/gui/grey_box.spr")
+	//    			music_entity.ambient_sound:pause()
+	//			end
+	//		elseif e.action == "restart" then
+	//			local elem = doc:getElementByID("menu")
+	//			elem:setVisible(false)
+	//			restart()
+	//	        this.world.gui:getSystem():enableCursor(false)			
+	//		end
+	//	end
+	//end
+}
+
+fn move(w : World, td : f32) : void {
+	const players = w.getEvoxData(Player);
+	const player = players[0].owner;
+	const e = player.getParent() else panic("Invalid scene structure");
+	var position = e.getPosition();
+	position.z = -4;
+	e.setPosition(position);
+	var ctrl = phy_ctrl.physical_controller(e) else panic("Invalid scene structure");
+
+	var movement_speed = speed;
+	if slow {
+		movement_speed = movement_speed * 0.25;
+	}
+	var animation_speed : f32 = 0;
+	if go_left or go_right {
+		animation_speed = movement_speed;
+	}
+	if dead {
+		animation_speed = 0;
+	}
+	if const a = animator.animator(player) {
+		if speed_input_idx < 0 {
+			speed_input_idx = a.getInputIndex("speed");
+			jump_input_idx = a.getInputIndex("jump");
+			dead_input_idx = a.getInputIndex("dead");
+		}
+		if speed_input_idx >= 0 {
+			a.setFloatInput(speed_input_idx as u32, animation_speed);
+		}
+	}
+	is_collision_down = ctrl.isCollisionDown();
+	if is_collision_down {
+		vspeed = 0;
+	}
+	jump = jump - td / 0.508;
+	if const a = animator.animator(player) {
+		if jump_input_idx >= 0 {
+			a.setBoolInput(jump_input_idx as u32, jump > 0);
+		}
+		if dead_input_idx >= 0 {
+			a.setBoolInput(dead_input_idx as u32, dead);
+		}
+	}
+	if dead {
+		return;
+	}
+
+	if jump > 0 {
+		ctrl.move({0, 30 * (jump * 2 - 1) * td, 0});
+	} else {
+		vspeed = vspeed - 9.8 * td;
+		if vspeed < -5.0 {
+			vspeed = -5.0;
+		}
+		ctrl.move({0, 0.6 * td * vspeed * 9.8, 0});
+	}
+
+	if go_left {
+		ctrl.move({1 * td * movement_speed, 0, 0});
+	}
+	if go_right {
+		ctrl.move({-1 * td * movement_speed, 0, 0});
+	}
+	if go_right {
+		player.setRotation({0, -0.707, 0, 0.707});
+	}
+	if go_left {
+		player.setRotation({0, 0.707, 0, 0.707});
+	}
+}
+
+fn main(input : InputSystem, world : World) : void {
+	updateLivesUI(world);
+	showUI(world, "respawn", false);
+	showUI(world, "gameover", false);
+	showUI(world, "interact", false);
+	showUI(world, "menu", false);
+	showCursor(world, false);
+	setMusicEnabled(world, true);
+	while true {
+		var time_delta : f32 = yield;
+		total_time += time_delta;
+		updateTimeUI(world);
+		handleUIEvents(world);
+		handleEvents(input, world);
+		if not paused {
+			updateCoins(world, time_delta);
+			updateTutorialLevers(world, time_delta);
+			updateCheckpoints(world, time_delta);
+			updatePlatforms(world, time_delta);
+			processTriggers(world);
+			move(world, time_delta);
+		}
+	}
+}

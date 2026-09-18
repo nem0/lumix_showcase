@@ -1,0 +1,67 @@
+[style] {
+	.button {
+		bg-image: "platformer/gui/button.spr";
+		padding: 0.5em;
+		align: center;
+		width: 50%;
+		margin: 0.5em;
+	}
+
+	.msg {
+		width: 100%;
+		align: center;
+		bg-color: #ffFFff;
+		color: #000000;
+		padding: 0.5em;
+		position: absolute;
+		top: 25%;
+	}
+}
+[box width=100% height=100% font="platformer/gui/kenvector_future.ttf" 
+	font-size=30
+	color=#ffFFff
+] {
+	// hud
+	[box width=100% direction=row justify-content=space-between font-size=40] {
+		[box direction=row] {
+			[box $life0 bg-image="platformer/gui/life.spr" width=1em height=1em] {}
+			[box $life1 bg-image="platformer/gui/life.spr" width=1em height=1em] {}
+			[box $life2 bg-image="platformer/gui/life.spr" width=1em height=1em] {}
+		}
+		[box position=absolute left=50% pivot-x=50%] {
+			[span $time text="0:00"]
+		}
+		[box direction=row position=absolute left=100% pivot-x=100%] {
+			[box] { [span $coins text="0"] }
+			[box bg-image="platformer/gui/coin.spr" width=1em height=1em] {}
+		}
+	}
+
+	// messages
+	[box $interact visible=false .msg] { Press E to interact }
+	[box $respawn visible=false .msg] { Press R to respawn }
+	[box $gameover visible=false .msg] { GAME OVER. NOOB }
+
+	// menu
+	[box $menu
+		visible=false
+		position=absolute
+		left=50%
+		pivot-x=50%
+		height=100%
+		width=33%
+		color=#000000
+		align-items=center
+		justify-content=center
+		align-items=center
+		bg-color=#aaaaaa
+	] {
+		[box padding=0.5em align=center] { Menu }
+		[box on-click=restart .button] { Restart }
+		[box direction=row margin-left=3em] { // checkbox
+			[box on-click=music_checkbox bg-image="platformer/gui/grey_boxcheckmark.spr" width=1em height=1em margin-right=0.5em margin-left=0.5em] {}
+			[box] { Music }
+		}	
+		[box on-click=exit .button] { Close }
+	}
+}

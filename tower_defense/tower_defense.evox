@@ -1,0 +1,998 @@
+// Behavioral port of tower_defense/tower_defense.lua.
+import "std:math" as math
+import "core:random" as random
+import "core:world"
+import "core:entity"
+import "core:vec2"
+import "core:vec3"
+import "core:quat"
+import "core:camera"
+import "core:model_instance"
+import "core:particle_emitter"
+import "core:input"
+import "core:inputdevicetype"
+import "core:ui"
+import "core:uisystem"
+import "core:document"
+import "core:element"
+import "core:EventType"
+
+comptime GRID_WIDTH: i32 = 30;
+comptime GRID_HEIGHT: i32 = 20;
+comptime TILE_SPACING: f32 = 1;
+comptime MAX_PATH: i32 = 640;
+comptime MAX_UNITS: i32 = 512;
+comptime MAX_PROPS: i32 = 20000;
+comptime PI: f32 = 3.141592653589793;
+const TOWER_OFFSET_Y: f32 = 0.15;
+const WEAPON_OFFSET_Y: f32 = 0.75;
+const PROJECTILE_OFFSET_Y: f32 = 1;
+const WAVE_DELAY: f32 = 5;
+
+struct TowerType {
+    model: [] const u8;
+    weapon: [] const u8;
+    range: f32;
+    damage: f32;
+    fire_rate: f32;
+    ammo: [] const u8;
+    speed: f32;
+    rotation_speed: f32;
+    cost: i32;
+}
+
+struct EnemyType {
+    model: [] const u8;
+    speed: f32;
+    hp: f32;
+    scale: f32;
+}
+
+struct Wave {
+    count: i32;
+    first: i32;
+    last: i32;
+    interval: f32;
+}
+
+struct Point {
+    x: i32;
+    z: i32;
+}
+
+struct Enemy {
+    entity: Entity;
+    health: f32;
+    speed: f32;
+    path_index: i32;
+    wave: i32;
+    kind: i32;
+    active: bool;
+    death_fx: bool;
+}
+
+struct Tower {
+    entity: Entity;
+    weapon: Entity;
+    range: f32;
+    damage: f32;
+    fire_rate: f32;
+    last_shot: f32;
+    ammo: [] const u8;
+    speed: f32;
+    rotation_speed: f32;
+    angle: f32;
+    active: bool;
+    x: i32;
+    z: i32;
+}
+
+struct Projectile {
+    entity: Entity;
+    target: i32;
+    damage: f32;
+    speed: f32;
+    active: bool;
+}
+
+struct Effect {
+    entity: Entity;
+    ttl: f32;
+    active: bool;
+}
+
+struct Prop {
+    entity: Entity;
+    x: i32;
+    z: i32;
+    active: bool;
+}
+
+const TOWERS: [] TowerType = [
+    {"tower_defense/models/tower-round-build-c.fbx", "tower_defense/models/weapon-cannon.fbx", 10, 20, 1, "tower_defense/models/weapon-ammo-cannonball.fbx", 5, 1, 100},
+    {"tower_defense/models/tower-round-build-a.fbx", "tower_defense/models/weapon-turret.fbx", 12, 25, 0.8, "tower_defense/models/weapon-ammo-bullet.fbx", 8, 2, 150},
+    {"tower_defense/models/tower-round-build-b.fbx", "tower_defense/models/weapon-catapult.fbx", 8, 30, 0.5, "tower_defense/models/weapon-ammo-boulder.fbx", 4, 0.5, 200},
+    {"tower_defense/models/tower-square-build-a.fbx", "tower_defense/models/weapon-ballista.fbx", 11, 22, 1.1, "tower_defense/models/weapon-ammo-arrow.fbx", 6, 1.5, 250}
+];
+const ENEMIES: [] EnemyType = [
+    {"tower_defense/models/enemy-ufo-a.fbx", 2, 100, 0.7},
+    {"tower_defense/models/enemy-ufo-b.fbx", 2.5, 80, 0.7},
+    {"tower_defense/models/enemy-ufo-c.fbx", 1.5, 150, 0.7},
+    {"tower_defense/models/enemy-ufo-d.fbx", 2.2, 120, 0.7}
+];
+const WAVES: [] Wave = [{5, 0, 0, 2},{8, 0, 1, 1.8},{10, 0, 2, 1.6},{12, 1, 3, 1.4},{15, 2, 3, 1.2},{20, 3, 3, 1}
+];
+
+var world: World = {
+    null
+};
+var game_camera: ? Camera = null;
+var enemies: [MAX_UNITS] Enemy = undefined;
+var towers: [MAX_UNITS] Tower = undefined;
+var projectiles: [MAX_UNITS] Projectile = undefined;
+var effects: [MAX_UNITS] Effect = undefined;
+var enemy_count: i32 = 0;
+var tower_count: i32 = 0;
+var projectile_count: i32 = 0;
+var effect_count: i32 = 0;
+var props: [MAX_PROPS] Prop = undefined;
+var prop_count: i32 = 0;
+var path: [MAX_PATH] Point = undefined;
+var path_count: i32 = 0;
+var path_flags: [31][21] bool = undefined;
+var passable: [31][21] bool = undefined;
+var map_start = Point {
+    1, 10
+};
+var map_end = Point {
+    30, 10
+};
+var waypoints: [5] Point = undefined;
+var score: i32 = 400;
+var wave: i32 = 1;
+var wave_active = false;
+var spawned: i32 = 0;
+var spawn_timer: f32 = 0;
+var wave_timer: f32 = WAVE_DELAY;
+var early = false;
+var selected: i32 = 0;
+var previous_selected: i32 = 0;
+var mouse = Vec2 {
+    0.5, 0.5
+};
+var click = false;
+var placeholder: ? Entity = null;
+var ui_doc: ? Document = null;
+var score_ui: ? Element = null;
+var wave_ui: ? Element = null;
+var count_box: ? Element = null;
+var count_ui: ? Element = null;
+var world_time: f32 = 0;
+
+fn minimum(a: f32, b: f32): f32 {
+    return a < b ? a: b;
+}
+
+fn maximum(a: f32, b: f32): f32 {
+    return a > b ? a: b;
+}
+
+fn absf(a: f32): f32 {
+    return a < 0 ? - a: a;
+}
+
+fn floori(v: f32): i32 {
+    const i = v as i32;
+    return v < i as f32 ? i - 1: i;
+}
+
+fn yawAngle(x: f32, z: f32): f32 {
+    const ax = absf(x) + 0.0000001;
+    var angle: f32 = 0;
+    if z >= 0 {
+        const r =(z - ax) /(z + ax);
+        angle = PI * 0.25 - PI * 0.25 * r;
+    }
+    else {
+        const r =(z + ax) /(ax - z);
+        angle = PI * 0.75 - PI * 0.25 * r;
+    }
+    return x < 0 ? - angle: angle;
+}
+
+fn lerpAngle(current: f32, target: f32, max_delta: f32): f32 {
+    var difference = target - current;
+    while difference > PI {
+        difference -= PI * 2;
+    }
+    while difference < - PI {
+        difference += PI * 2;
+    }
+    if absf(difference) < max_delta {
+        return target;
+    }
+    return current +(difference > 0 ? max_delta:-max_delta);
+}
+
+fn randInt(a: i32, b: i32): i32 {
+    return random.randRange(a as u32, b as u32) as i32;
+}
+
+fn randf(a: f32, b: f32): f32 {
+    return random.randFloatRange(a, b);
+}
+
+fn dist(a: Vec3, b: Vec3): f32 {
+    const x = a.x - b.x;
+    const y = a.y - b.y;
+    const z = a.z - b.z;
+    return math.sqrt(x * x + y * y + z * z);
+}
+
+fn position(e: Entity, p: Vec3): void {
+    if e.isValid() {
+        e.setPosition({ p.x as f64, p.y as f64, p.z as f64 });
+    }
+}
+
+fn entityPosition(e: Entity): Vec3 {
+    if not e.isValid() {
+        return {
+            0, 0, 0
+        };
+    }
+    const p = e.getPosition();
+    return {
+        p.x as f32, p.y as f32, p.z as f32
+    };
+}
+
+fn gridPos(x: i32, z: i32, y: f32): Vec3 {
+    return {
+        (x as f32 - 15) * TILE_SPACING, y,(z as f32 - 10) * TILE_SPACING
+    };
+}
+
+fn entityModel(source: [] const u8, p: Vec3, scale: f32): Entity {
+    const e = world.createEntity();
+    position(e, p);
+    e.setScale({ scale, scale, scale });
+    const m = e.createModelInstance() else panic("Missing renderer");
+    m.setPath(source);
+    return e;
+}
+
+fn propAt(source: [] const u8, x: i32, z: i32, p: Vec3, scale: f32, angle: f32): void {
+    if prop_count >= MAX_PROPS {
+        return;
+    }
+    const e = entityModel(source, p, scale);
+    e.setRotation(makeQuatFromYaw(angle));
+    props[prop_count] = {
+        e, x, z, true
+    };
+    prop_count += 1;
+}
+
+fn tile(source: [] const u8, p: Vec3, rotation: Quat, ground_override: bool): void {
+    const e = world.createEntity();
+    position(e, p);
+    e.setRotation(rotation);
+    const m = e.createModelInstance() else panic("Missing renderer");
+    m.setPath(source);
+    if ground_override {
+        m.setMaterialOverride(0, "tower_defense/models/ground.mat");
+    }
+}
+
+fn effect(source: [] const u8, p: Vec3, ttl: f32): void {
+    var slot = effect_count;
+    for i in 0 .. effect_count {
+        if not effects[i].active {
+            slot = i;
+            break;
+        }
+    }
+    if slot >= MAX_UNITS {
+        return;
+    }
+    const e = world.createEntity();
+    position(e, p);
+    const pe = e.createParticleEmitter() else return;
+    pe.setPath(source);
+    pe.setAutodestroy(true);
+    effects[slot] = {
+        e, ttl, true
+    };
+    if slot == effect_count {
+        effect_count += 1;
+    }
+}
+
+fn getDir(a: Point, b: Point): i32 {
+    if b.x > a.x {
+        return 0;
+    }
+    if b.x < a.x {
+        return 2;
+    }
+    if b.z > a.z {
+        return 1;
+    }
+    return 3;
+}
+
+fn addPathPoint(x: i32, z: i32): void {
+    if path_count >= MAX_PATH {
+        return;
+    }
+    if path_count > 0 and path[path_count - 1].x == x and path[path_count - 1].z == z {
+        return;
+    }
+    path[path_count] = Point {
+        x, z
+    };
+    path_flags[x][z] = true;
+    path_count += 1;
+}
+
+fn appendBfsPath(from: Point, goal: Point, block_intermediate: bool): bool {
+    var visited: [31][21] bool = undefined;
+    var parent_x: [31][21] i32 = undefined;
+    var parent_z: [31][21] i32 = undefined;
+    var queue: [MAX_PATH] Point = undefined;
+    for x in 1 .. 31 {
+        for z in 1 .. 21 {
+            visited[x][z] = false;
+            parent_x[x][z] =-1;
+            parent_z[x][z] =-1;
+        }
+    }
+    var head = 0;
+    var tail = 1;
+    queue[0] = from;
+    visited[from.x][from.z] = true;
+    while head < tail {
+        const current = queue[head];
+        head += 1;
+        if current.x == goal.x and current.z == goal.z {
+            break;
+        }
+        const dx: [4] i32 = [0, 0, 1, -1];
+        const dz: [4] i32 = [1, -1, 0, 0];
+        for d in 0 .. 4 {
+            const nx = current.x + dx[d];
+            const nz = current.z + dz[d];
+            if nx >= 1 and nx <= GRID_WIDTH and nz >= 1 and nz <= GRID_HEIGHT and passable[nx][nz] and not visited[nx][nz] {
+                visited[nx][nz] = true;
+                parent_x[nx][nz] = current.x;
+                parent_z[nx][nz] = current.z;
+                queue[tail] = {
+                    nx, nz
+                };
+                tail += 1;
+            }
+        }
+    }
+    if not visited[goal.x][goal.z] {
+        return false;
+    }
+    var reverse: [MAX_PATH] Point = undefined;
+    var count = 0;
+    var current = goal;
+    while true {
+        reverse[count] = current;
+        count += 1;
+        if current.x == from.x and current.z == from.z {
+            break;
+        }
+        current = {
+            parent_x[current.x][current.z], parent_z[current.x][current.z]
+        };
+    }
+    var i = count;
+    while i > 0 {
+        i -= 1;
+        if path_count == 0 or i < count - 1 {
+            addPathPoint(reverse[i].x, reverse[i].z);
+        }
+    }
+    if block_intermediate {
+        for j in 1 .. count - 1 {
+            const q = reverse[j];
+            passable[q.x][q.z] = false;
+        }
+    }
+    return true;
+}
+
+fn generateMap(): void {
+    while true {
+        for x in 1 .. 31 {
+            for z in 1 .. 21 {
+                passable[x][z] = true;
+                path_flags[x][z] = false;
+            }
+        }
+        map_start = {
+            1, randInt(1, GRID_HEIGHT)
+        };
+        map_end = {
+            GRID_WIDTH, randInt(1, GRID_HEIGHT)
+        };
+        var valid_map = true;
+        for i in 0 .. 5 {
+            var point = Point {
+                - 1, -1
+            };
+            var attempts = 0;
+            while point.x < 0 and attempts < 100 {
+                attempts += 1;
+                const previous = i == 0 ? map_start: waypoints[i - 1];
+                const min_x = previous.x - 8 < 1 ? 1: previous.x - 8;
+                const max_x = previous.x + 8 > GRID_WIDTH ? GRID_WIDTH: previous.x + 8;
+                const min_z = previous.z - 8 < 1 ? 1: previous.z - 8;
+                const max_z = previous.z + 8 > GRID_HEIGHT ? GRID_HEIGHT: previous.z + 8;
+                const x = randInt(min_x, max_x);
+                const z = randInt(min_z, max_z);
+                var okay = passable[x][z] and not(x == map_start.x and z == map_start.z) and not(x == map_end.x and z == map_end.z);
+                for j in 0 .. i {
+                    if absf((waypoints[j].x - x) as f32) <= 1 or absf((waypoints[j].z - z) as f32) <= 1 {
+                        okay = false;
+                    }
+                }
+                if okay {
+                    point = {
+                        x, z
+                    };
+                }
+            }
+            if point.x < 0 {
+                const x = randInt(1, GRID_WIDTH);
+                const z = randInt(1, GRID_HEIGHT);
+                if passable[x][z] {
+                    point = {
+                        x, z
+                    };
+                }
+            }
+            if point.x < 0 {
+                valid_map = false;
+                break;
+            }
+            waypoints[i] = point;
+        }
+        if not valid_map {
+            continue;
+        }
+        path_count = 0;
+        var previous = map_start;
+        for i in 0 .. 5 {
+            if not appendBfsPath(previous, waypoints[i], true) {
+                valid_map = false;
+                break;
+            }
+            previous = waypoints[i];
+        }
+        if not valid_map {
+            continue;
+        }
+        passable[map_start.x][map_start.z] = false;
+        passable[map_end.x][map_end.z] = true;
+        if appendBfsPath(previous, map_end, false) {
+            return;
+        }
+    }
+}
+
+fn refreshUI(): void {
+    const u = world.ui() else return;
+    if not u.isReady() {
+        return;
+    }
+    const d = u.getDocument();
+    if const e = d.getElementByID("score") {
+        var s: [32] u8 = undefined;
+        const t = "Score: ";
+        var n = 0;
+        for c in t {
+            s[n] = c;
+            n += 1;
+        }
+        var q = score;
+        var digits: [16] u8 = undefined;
+        var k = 0;
+        while true {
+            digits[k] =('0' as i32 + q % 10) as u8;
+            k += 1;
+            q /= 10;
+            if q == 0 {
+                break;
+            }
+        }
+        while k > 0 {
+            k -= 1;
+            s[n] = digits[k];
+            n += 1;
+        }
+        e.setText(s[:n]);
+    }
+    if const e = d.getElementByID("wave") {
+        var s: [32] u8 = undefined;
+        const t = "Wave: ";
+        var n = 0;
+        for c in t {
+            s[n] = c;
+            n += 1;
+        }
+        s[n] =('0' as i32 + wave) as u8;
+        n += 1;
+        e.setText(s[:n]);
+    }
+    if const e = d.getElementByID("countdown") {
+        if wave_timer > 0 {
+            e.setVisible(true);
+        } else {
+            e.setVisible(false);
+        }
+    }
+    if const e = d.getElementByID("countdown_text") {
+        if wave_timer > 0 {
+            var text: [32] u8 = undefined;
+            const prefix = "Next wave in: ";
+            var n = 0;
+            for c in prefix {
+                text[n] = c;
+                n += 1;
+            }
+            var seconds = wave_timer as i32;
+            if seconds as f32 < wave_timer {
+                seconds += 1;
+            }
+            text[n] =('0' as i32 + seconds) as u8;
+            e.setText(text[:n + 1]);
+        } else {
+            e.setText("");
+        }
+    }
+}
+
+fn handleUI(): void {
+    const u = world.ui() else return;
+    if not u.isReady() {
+        return;
+    }
+    for e in u.getDocument().getEvents() {
+        if e.type == EventType.ACTION {
+            if e.action == "start_wave_early" {
+                early = true;
+            } else if e.action == "tower_1" {
+                selected = 0;
+            } else if e.action == "tower_2" {
+                selected = 1;
+            } else if e.action == "tower_3" {
+                selected = 2;
+            } else if e.action == "tower_4" {
+                selected = 3;
+            }
+        }
+    }
+}
+
+fn spawnEnemy(kind: i32): void {
+    var slot = enemy_count;
+    for i in 0 .. enemy_count {
+        if not enemies[i].active {
+            slot = i;
+            break;
+        }
+    }
+    if slot >= MAX_UNITS {
+        return;
+    }
+    const t = ENEMIES[kind];
+    enemies[slot] = {
+        entityModel(t.model, gridPos(map_start.x, map_start.z, 0), t.scale), t.hp, t.speed, 0, wave, kind, true, false
+    };
+    if slot == enemy_count {
+        enemy_count += 1;
+    }
+}
+
+fn spawnProjectile(t: i32, target: i32): void {
+    var slot = projectile_count;
+    for i in 0 .. projectile_count {
+        if not projectiles[i].active {
+            slot = i;
+            break;
+        }
+    }
+    if slot >= MAX_UNITS {
+        return;
+    }
+    const tower = towers[t];
+    const tp = gridPos(tower.x, tower.z, TOWER_OFFSET_Y + PROJECTILE_OFFSET_Y);
+    projectiles[slot] = {
+        entityModel(tower.ammo, tp, 1), target, tower.damage, tower.speed, true
+    };
+    const target_position = entityPosition(enemies[target].entity);
+    projectiles[slot].entity.setRotation(makeQuatFromYaw(yawAngle(target_position.x - tp.x, target_position.z - tp.z)));
+    const pe = projectiles[slot].entity.createParticleEmitter() else return;
+    pe.setPath("tower_defense/particles/projectile_trail.pat");
+    pe.setAutodestroy(false);
+    if slot == projectile_count {
+        projectile_count += 1;
+    }
+}
+
+fn placeTower(x: i32, z: i32): void {
+    if x < - 14 or x > 45 or z < - 14 or z > 35 {
+        return;
+    }
+    if x >= 1 and x <= GRID_WIDTH and z >= 1 and z <= GRID_HEIGHT and path_flags[x][z] {
+        return;
+    }
+    const t = TOWERS[selected];
+    if score < t.cost or tower_count >= MAX_UNITS {
+        return;
+    }
+    score -= t.cost;
+    for i in 0 .. prop_count {
+        if props[i].active and props[i].x == x and props[i].z == z {
+            props[i].entity.destroy();
+            props[i].active = false;
+        }
+    }
+    const e = entityModel(t.model, gridPos(x, z, TOWER_OFFSET_Y), 1);
+    const w = entityModel(t.weapon, gridPos(x, z, TOWER_OFFSET_Y + WEAPON_OFFSET_Y), 1);
+    towers[tower_count] = {
+        e, w, t.range, t.damage, t.fire_rate, 0, t.ammo, t.speed, t.rotation_speed, 0, true, x, z
+    };
+    tower_count += 1;
+}
+
+fn towerHit(x: i32, z: i32): bool {
+    for i in 0 .. tower_count {
+        if towers[i].active and towers[i].x == x and towers[i].z == z {
+            return true;
+        }
+    }
+    return false;
+}
+
+fn updateEnemies(dt: f32): void {
+    for i in 0 .. enemy_count {
+        if not enemies[i].active {
+            continue;
+        }
+        var e = & enemies[i];
+        if e.health > 0 and e.path_index < path_count {
+            const p = gridPos(path[e.path_index].x, path[e.path_index].z, 0);
+            const ep = entityPosition(e.entity);
+            const d = dist(ep, p);
+            if d < 0.5 {
+                e.path_index += 1;
+            }
+            else {
+                const dx =(p.x - ep.x) / maximum(0.001, d);
+                const dz =(p.z - ep.z) / maximum(0.001, d);
+                position(e.entity, { ep.x + dx * e.speed * dt, 0, ep.z + dz * e.speed * dt });
+            }
+        }
+        if e.health <= 0 {
+            if not e.death_fx {
+                effect("tower_defense/particles/explosion.pat", entityPosition(e.entity), 1.6);
+                e.death_fx = true;
+            }
+            score += ENEMIES[e.kind].hp as i32;
+            e.entity.destroy();
+            e.active = false;
+        } else if e.path_index >= path_count {
+            score = score > 50 ? score - 50: 0;
+            e.entity.destroy();
+            e.active = false;
+        }
+    }
+}
+
+fn updateTowers(dt: f32): void {
+    for i in 0 .. tower_count {
+        if not towers[i].active {
+            continue;
+        }
+        var t = & towers[i];
+        t.last_shot += dt;
+        var target: i32 =-1;
+        var best = t.range;
+        const p = gridPos(t.x, t.z, 0);
+        for j in 0 .. enemy_count {
+            if enemies[j].active {
+                const q = entityPosition(enemies[j].entity);
+                const d = dist(p, q);
+                if d < best {
+                    best = d;
+                    target = j;
+                }
+            }
+        }
+        if target >= 0 {
+            const q = entityPosition(enemies[target].entity);
+            const target_angle = yawAngle(q.x - p.x, q.z - p.z);
+            t.angle = lerpAngle(t.angle, target_angle, t.rotation_speed * dt);
+            t.weapon.setRotation(makeQuatFromYaw(t.angle));
+            var difference = target_angle - t.angle;
+            while difference > PI {
+                difference -= PI * 2;
+            }
+            while difference < - PI {
+                difference += PI * 2;
+            }
+            if t.last_shot >= 1 / t.fire_rate and absf(difference) < 0.1 {
+                spawnProjectile(i, target);
+                effect("tower_defense/particles/muzzle_flash.pat", entityPosition(t.weapon), 0.35);
+                t.last_shot = 0;
+            }
+        }
+    }
+}
+
+fn updateProjectiles(dt: f32): void {
+    for i in 0 .. projectile_count {
+        if not projectiles[i].active {
+            continue;
+        }
+        var p = & projectiles[i];
+        if p.target < 0 or p.target >= enemy_count or not enemies[p.target].active {
+            p.entity.destroy();
+            p.active = false;
+            continue;
+        }
+        const q = entityPosition(enemies[p.target].entity);
+        const ep = entityPosition(p.entity);
+        const dx = q.x - ep.x;
+        const dz = q.z - ep.z;
+        const d = math.sqrt(dx * dx + dz * dz);
+        if d < 0.5 {
+            enemies[p.target].health -= p.damage;
+            effect("tower_defense/particles/hit_spark.pat", q, 0.6);
+            if enemies[p.target].health <= 0 and not enemies[p.target].death_fx {
+                effect("tower_defense/particles/explosion.pat", q, 1.6);
+                enemies[p.target].death_fx = true;
+            }
+            p.entity.destroy();
+            p.active = false;
+        } else {
+            p.entity.setRotation(makeQuatFromYaw(yawAngle(dx, dz)));
+            position(p.entity, { ep.x + dx / d * p.speed * dt, PROJECTILE_OFFSET_Y, ep.z + dz / d * p.speed * dt });
+        }
+    }
+}
+
+fn update(dt: f32): void {
+    handleUI();
+    if selected != previous_selected {
+        var old_position = Vec3 {
+            0, -100, 0
+        };
+        if const old = placeholder {
+            old_position = entityPosition(old);
+            old.destroy();
+        }
+        placeholder = entityModel(TOWERS[selected].model, old_position, 0.8);
+        previous_selected = selected;
+    }
+    world_time += dt;
+    if wave_active {
+        spawn_timer += dt;
+        const w = WAVES[wave - 1];
+        if spawned < w.count and spawn_timer >= w.interval {
+            spawnEnemy(randInt(w.first, w.last));
+            spawned += 1;
+            spawn_timer = 0;
+        } else if spawned >= w.count {
+            wave_active = false;
+        }
+    } else if wave <= 6 {
+        var living = false;
+        for i in 0 .. enemy_count {
+            if enemies[i].active and enemies[i].wave == wave {
+                living = true;
+            }
+        }
+        if not living {
+            if wave_timer == 0 {
+                wave_timer = WAVE_DELAY;
+            }
+            else if wave_timer > 0 {
+                if early {
+                    wave_timer = 0;
+                    early = false;
+                } else {
+                    wave_timer -= dt;
+                }
+                if wave_timer <= 0 {
+                    if wave < 6 {
+                        wave += 1;
+                        wave_active = true;
+                        spawned = 0;
+                        spawn_timer = 0;
+                        wave_timer = 0;
+                    }
+                    else {
+                        wave_timer = 0;
+                    }
+                }
+            }
+        }
+    }
+    updateEnemies(dt);
+    updateTowers(dt);
+    updateProjectiles(dt);
+    for i in 0 .. effect_count {
+        if effects[i].active {
+            effects[i].ttl -= dt;
+            if effects[i].ttl <= 0 {
+                // The particle emitter is autodestroying the entity; only retire the record.
+                effects[i].active = false;
+            }
+        }
+    }
+    refreshUI();
+    const c = game_camera else return;
+    const ray = c.getRay(mouse);
+    var has_hit = false;
+    if ray.dir.y != 0 {
+        const hit =-ray.origin.y / ray.dir.y as f64;
+        if hit > 0 {
+            has_hit = true;
+            const x = floori((ray.origin.x + ray.dir.x as f64 * hit) as f32 + GRID_WIDTH as f32 * 0.5 + 0.5);
+            const z = floori((ray.origin.z + ray.dir.z as f64 * hit) as f32 + GRID_HEIGHT as f32 * 0.5 + 0.5);
+            if const p = placeholder {
+                position(p, gridPos(x, z, TOWER_OFFSET_Y));
+            }
+            if click and x >= - 14 and x <= 45 and z >= - 14 and z <= 35 {
+                const on_path = x >= 1 and x <= GRID_WIDTH and z >= 1 and z <= GRID_HEIGHT and path_flags[x][z];
+                if not on_path {
+                    placeTower(x, z);
+                }
+            }
+        }
+    }
+    if not has_hit {
+        if const p = placeholder {
+            position(p, { 0, -100, 0 });
+        }
+    }
+    if const p = placeholder {
+        const scale = 0.8 + 0.1 * math.sin(world_time * 2);
+        p.setScale({ scale, scale, scale });
+    }
+    click = false;
+}
+
+fn onInput(e: InputEvent): void {
+    match e {
+        case AxisEvent: if e.device_type == .MOUSE {
+            mouse = {
+                e.x_abs, e.y_abs
+            };
+        }
+        case ButtonEvent: if e.device_type == .MOUSE and e.key_id == 0 and e.down {
+            click = true;
+        }
+        if e.device_type == .KEYBOARD and e.down {
+            if e.key_id == 49 {
+                selected = 0;
+            } else if e.key_id == 50 {
+                selected = 1;
+            } else if e.key_id == 51 {
+                selected = 2;
+            } else if e.key_id == 52 {
+                selected = 3;
+            }
+        }
+        case:
+    }
+}
+
+fn start(): void {
+    generateMap();
+    const ce = world.createEntity();
+    ce.setName("camera");
+    ce.setPosition({ 0, 28, 12 });
+    // Aim toward the map center from the south edge.
+    ce.setRotation(makeQuatFromYaw(PI * 2) * makeQuatFromPitch(1.15));
+    game_camera = ce.createCamera();
+    if const u = world.ui() {
+        u.load("tower_defense/tower_defense.ui");
+        u.getSystem().enableCursor(true);
+    }
+    for x in - 14 .. 46 {
+        for z in - 14 .. 36 {
+            var source: [] const u8 = "tower_defense/models/tile.fbx";
+            var rotation = Quat {
+                0, 0, 0, 1
+            };
+            var ground_override = true;
+            var path_index =-1;
+            if x >= 1 and x <= GRID_WIDTH and z >= 1 and z <= GRID_HEIGHT and path_flags[x][z] {
+                for i in 0 .. path_count {
+                    if path[i].x == x and path[i].z == z {
+                        path_index = i;
+                    }
+                }
+            }
+            if path_index >= 0 {
+                var direction = path_index == 0 ? getDir(path[0], path[1]): getDir(path[path_index - 1], path[path_index]);
+                if x == map_start.x and z == map_start.z {
+                    source = "tower_defense/models/tile-spawn.fbx";
+                } else if x == map_end.x and z == map_end.z {
+                    source = "tower_defense/models/tile-spawn-end.fbx";
+                    direction =(direction + 2) % 4;
+                } else if path_index > 0 and path_index < path_count - 1 {
+                    const next_direction = getDir(path[path_index], path[path_index + 1]);
+                    if direction != next_direction {
+                        source = "tower_defense/models/tile-corner-round.fbx";
+                        const difference =(next_direction - direction + 4) % 4;
+                        direction = difference == 1 ?(next_direction + 1) % 4: next_direction;
+                    } else {
+                        source = "tower_defense/models/tile-straight.fbx";
+                    }
+                } else {
+                    source = "tower_defense/models/tile-straight.fbx";
+                }
+                const angle: f32 = direction == 0 ? PI * 0.5:(direction == 1 ? 0:(direction == 2 ? - PI * 0.5: PI));
+                rotation = makeQuatFromYaw(angle);
+                ground_override = false;
+            }
+            tile(source, gridPos(x, z, 0), rotation, ground_override);
+        }
+    }
+    for i in 0 .. 5 {
+        const p = waypoints[i];
+        if i % 2 == 0 {
+            entityModel("tower_defense/models/snow-wood-structure-high.fbx", gridPos(p.x, p.z, TOWER_OFFSET_Y), 1);
+        } else {
+            entityModel("tower_defense/models/snow-wood-structure.fbx", gridPos(p.x, p.z, TOWER_OFFSET_Y), 1);
+        }
+    }
+    for x in - 14 .. 46 {
+        for z in - 14 .. 36 {
+            const is_path = x >= 1 and x <= GRID_WIDTH and z >= 1 and z <= GRID_HEIGHT and path_flags[x][z];
+            if not is_path and randf(0, 1) < 0.5 {
+                const center = gridPos(x, z, 0.15);
+                for i in 0 .. 8 {
+                    const px = center.x + randf(-0.25, 0.25) + randf(-0.4, 0.4);
+                    const pz = center.z + randf(-0.25, 0.25) + randf(-0.4, 0.4);
+                    const source = randf(0, 1) < 0.5 ? "tower_defense/models/detail-tree.fbx": "tower_defense/models/detail-tree-large.fbx";
+                    propAt(source, x, z, { px, 0.15, pz }, randf(0.7, 1.1), randf(0, PI * 2));
+                }
+            }
+            if not is_path and randf(0, 1) < 0.3 {
+                const center = gridPos(x, z, 0.15);
+                const px = center.x + randf(-0.5, 0.5) + randf(-0.3, 0.3);
+                const pz = center.z + randf(-0.5, 0.5) + randf(-0.3, 0.3);
+                const source = randf(0, 1) < 0.5 ? "tower_defense/models/detail-rocks.fbx": "tower_defense/models/detail-dirt.fbx";
+                propAt(source, x, z, { px, 0.15, pz }, randf(0.3, 1), randf(0, PI * 2));
+            }
+        }
+    }
+    if const p = placeholder {
+        p.destroy();
+    }
+    placeholder = entityModel(TOWERS[selected].model, { 0, -100, 0 }, 0.8);
+    wave_timer = WAVE_DELAY;
+    refreshUI();
+}
+
+fn main(input: InputSystem, w: World): void {
+    world = w;
+    start();
+    while true {
+        const dt: f32 = yield;
+        for e in input.getEvents() {
+            onInput(e);
+        }
+        update(dt);
+    }
+}

@@ -1,22 +1,23 @@
 // TODO
-// Audio: jump, death, coin, and life pickup sounds
 // Music checkbox icon: switching checked/unchecked images
+// TODO sounds are not playing - preload
  
 import "core:entity"
-import "core:event"
+import "core:ui/event"
 import "core:input"
-import "core:keycode"
-import "core:physical_controller" as phy_ctrl
-import "core:ui"
-import "core:uisystem"
+import "core:core/keycode"
+import "core:physics/physical_controller" as phy_ctrl
+import "core:ui/module"
+import "core:ui/uisystem"
 import "core:world"
 import "core:attributes" as attr
-import "core:animator" as animator
-import "core:ambient_sound" as ambient_sound
-import "core:physics" as physics
+import "core:animation/animator" as animator
+import "core:audio/ambient_sound" as ambient_sound
+import "core:audio/module" as audio
+import "core:physics/module" as physics
 import "core:dvec3"
 import "core:vec3"
-import "core:model_instance"
+import "core:renderer/model_instance"
 import "std:math" as math
 
 operator ==(a : Entity, b : Entity) : bool {
@@ -264,6 +265,11 @@ fn updateLivesUI(world : World) : void {
 	showUI(world, "life2", lives > 2);
 }
 
+fn playSound(world : World, clip : []const u8) : void {
+	const module = audio.audio(world) else return;
+	audio.play2D(module, clip);
+}
+
 fn updateCheckpoints(world : World, td : f32) : void {
 	for &checkpoint_data in world.getEvoxData(Checkpoint) {
 		if not checkpoint_data.initialized {
@@ -305,6 +311,7 @@ fn updatePlatforms(world : World, td : f32) : void {
 fn killPlayer(world : World) : void {
 	if dead { return; }
 	dead = true;
+	playSound(world, "platformer/audio/sfx_deathscream_robot4.ogg");
 	lives -= 1;
 	updateLivesUI(world);
 	if lives > 0 {
@@ -342,6 +349,7 @@ fn processTriggers(world : World) : void {
 			if life_hit and player_hit and not hit.touch_lost and not life.picked and lives < 3 {
 				life.picked = true;
 				lives += 1;
+				playSound(world, "platformer/audio/sfx_sounds_powerup5.ogg");
 				updateLivesUI(world);
 				if const model = life.owner.model_instance() {
 					model.setEnabled(false);
@@ -356,6 +364,7 @@ fn processTriggers(world : World) : void {
 			if coin_hit and player_hit and not hit.touch_lost and not coin.picked {
 				coin.picked = true;
 				coins += 1;
+				playSound(world, "platformer/audio/sfx_coin_single1.ogg");
 				updateCoinsUI(world);
 				if const model = coin.owner.model_instance() {
 					model.setEnabled(false);
@@ -443,8 +452,14 @@ fn handleEvents(input : InputSystem, world : World) : void {
 						}
 						case .E: if event.down { interact(world); }
 						case .R: if event.down and dead and lives > 0 { respawn(world); }
-						case .SPACE: if event.down and not dead and is_collision_down { jump = 1; }
-						case .W: if event.down and not dead and is_collision_down { jump = 1; }
+						case .SPACE: if event.down and not dead and is_collision_down {
+							jump = 1;
+							playSound(world, "platformer/audio/sfx_movement_jump1.ogg");
+						}
+						case .W: if event.down and not dead and is_collision_down {
+							jump = 1;
+							playSound(world, "platformer/audio/sfx_movement_jump1.ogg");
+						}
 						case:
 					}
 				}

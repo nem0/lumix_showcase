@@ -59,7 +59,10 @@
 		[box padding=0.5em align=center] { Menu }
 		[box on-click=restart .button] { Restart }
 		[box direction=row margin-left=3em] { // checkbox
-			[box on-click=music_checkbox bg-image="platformer/gui/grey_boxcheckmark.spr" width=1em height=1em margin-right=0.5em margin-left=0.5em] {}
+			[box position=relative width=1em height=1em margin-right=0.5em margin-left=0.5em] {
+				[box position=absolute $music_checkbox_checked on-click=music_checkbox bg-image="platformer/gui/grey_boxcheckmark.spr" width=1em height=1em] {}
+				[box position=absolute $music_checkbox_unchecked visible=false on-click=music_checkbox bg-image="platformer/gui/grey_box.spr" width=1em height=1em] {}
+			}
 			[box] { Music }
 		}	
 		[box on-click=exit .button] { Close }

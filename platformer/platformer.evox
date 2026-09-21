@@ -490,6 +490,8 @@ fn setMusicEnabled(world : World, enabled : bool) : void {
 	else {
 		ambient_sound.pause(music);
 	}
+	showUI(world, "music_checkbox_checked", enabled);
+	showUI(world, "music_checkbox_unchecked", not enabled);
 }
 
 fn showCursor(world : World, show : bool) : void {

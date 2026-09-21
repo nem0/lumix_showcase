@@ -1,8 +1,8 @@
 // TODO
 // Music checkbox icon: switching checked/unchecked images
-// TODO sounds are not playing - preload
  
 import "core:entity"
+import "core:engine/engine"
 import "core:ui/event"
 import "core:input"
 import "core:core/keycode"
@@ -13,6 +13,7 @@ import "core:world"
 import "core:attributes" as attr
 import "core:animation/animator" as animator
 import "core:audio/ambient_sound" as ambient_sound
+import "core:audio/clip" as audio_clip
 import "core:audio/module" as audio
 import "core:physics/module" as physics
 import "core:dvec3"
@@ -268,6 +269,16 @@ fn updateLivesUI(world : World) : void {
 fn playSound(world : World, clip : []const u8) : void {
 	const module = audio.audio(world) else return;
 	audio.play2D(module, clip);
+}
+
+// Load each effect when the world starts so the first real playback does not
+// hit disk loading.
+fn preloadSounds(engine : Engine) : void {
+	audio_clip.load(engine, "platformer/audio/sfx_deathscream_robot4.ogg");
+	audio_clip.load(engine, "platformer/audio/sfx_sounds_powerup5.ogg");
+	audio_clip.load(engine, "platformer/audio/sfx_coin_single1.ogg");
+	audio_clip.load(engine, "platformer/audio/sfx_movement_jump1.ogg");
+	audio_clip.load(engine, "platformer/audio/sfx_movement_footsteps1a.ogg");
 }
 
 fn updateCheckpoints(world : World, td : f32) : void {
@@ -610,7 +621,9 @@ fn move(w : World, td : f32) : void {
 	}
 }
 
-fn main(input : InputSystem, world : World) : void {
+fn main(engine : Engine, world : World) : void {
+	const input_system = input(engine);
+	preloadSounds(engine);
 	updateLivesUI(world);
 	showUI(world, "respawn", false);
 	showUI(world, "gameover", false);
@@ -623,7 +636,7 @@ fn main(input : InputSystem, world : World) : void {
 		total_time += time_delta;
 		updateTimeUI(world);
 		handleUIEvents(world);
-		handleEvents(input, world);
+		handleEvents(input_system, world);
 		if not paused {
 			updateCoins(world, time_delta);
 			updateTutorialLevers(world, time_delta);

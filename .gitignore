@@ -2,3 +2,6 @@
 .lumix
 *.prj
 studio.ini
+.vscode
+.obj
+.pdb

@@ -1,0 +1,715 @@
+// Hex gameplay entry point. UI is authored in hex/hex.ui; no runtime GUI entities.
+import "core:engine/engine"
+import "core:world"
+import "core:entity"
+import "core:input"
+import "core:engine/inputdevicetype"
+import "core:core/keycode"
+import "core:dvec3"
+import "core:vec2"
+import "core:vec3"
+import "core:renderer/model_instance"
+import "core:renderer/camera"
+import "core:ui/element"
+import "core:ui/eventtype"
+import "core:ui/module"
+import "core:ui/uisystem"
+import "core:random" as random
+import "std:math" as math
+import "hex/building_types" as building_catalog
+
+const GRID_W: i32 = 30;
+const GRID_H: i32 = 20;
+const HEX_X: f32 = 2.0;
+const HEX_Z: f32 = 1.7320508;
+
+struct GameState {
+	population: i32;
+	limit: i32;
+	happiness: i32;
+	actions: i32;
+	wood: i32;
+	grain: i32;
+	water: i32;
+	stone: i32;
+	tools: i32;
+	gold: i32;
+	turn: i32;
+	started: bool;
+}
+
+var state: GameState = {1, 10, 5, 1, 0, 2, 10, 10, 50, 0, 0, false};
+var game_camera: ?Entity = null;
+var camera_component: ?Camera = null;
+var tree_entities: [600]?Entity = undefined;
+var stump_entities: [600]?Entity = undefined;
+var tree_model_indices: [600]i32 = undefined;
+var water_tiles: [600]bool = undefined;
+var mountain_tiles: [600]bool = undefined;
+var owned_tiles: [600]bool = undefined;
+var occupied_tiles: [600]bool = undefined;
+var building_names: [600][]const u8 = undefined;
+var cutting_mode = false;
+var hovered_tree_idx: i32 = -1;
+var tree_hover_time: f32 = 0;
+var error_timer: f32 = 0;
+var turn_popup_timer: f32 = 0;
+var selected_building: []const u8 = "";
+var highlighted_action: []const u8 = "";
+var preview_entity: ?Entity = null;
+var preview_kind: []const u8 = "";
+var move_left = false;
+var move_right = false;
+var move_forward = false;
+var move_back = false;
+var zoom_in = false;
+var zoom_out = false;
+var panning = false;
+var mouse_x: f32 = 0;
+var mouse_y: f32 = 0;
+var last_mouse_x: f32 = 0;
+var last_mouse_y: f32 = 0;
+var wheel_delta: f32 = 0;
+
+fn show(world: World, id: []const u8, visible: bool) : void {
+	const ui = world.ui() else return;
+	const e = ui.getDocument().getElementByID(id) else return;
+	e.setVisible(visible);
+}
+
+fn actionHighlightID(action: []const u8) : []const u8 {
+	match action {
+		case "cut": return "selected_cut";
+		case "home": return "selected_home";
+		case "field": return "selected_field";
+		case "well": return "selected_well";
+		case "mine": return "selected_mine";
+		case "lumbermill": return "selected_lumbermill";
+		case "tavern": return "selected_tavern";
+		case "blacksmith": return "selected_blacksmith";
+		case "windmill": return "selected_windmill";
+		case "market": return "selected_market";
+		case: return "";
+	}
+}
+
+fn updateActionHighlight(world: World) : void {
+	const active = cutting_mode ? "cut" : selected_building;
+	if active == highlighted_action { return; }
+	const previous_id = actionHighlightID(highlighted_action);
+	if previous_id != "" { show(world, previous_id, false); }
+	const active_id = actionHighlightID(active);
+	if active_id != "" { show(world, active_id, true); }
+	highlighted_action = active;
+}
+
+fn showError(world: World, message: []const u8) : void {
+	text(world, "error_message", message);
+	show(world, "error_popup", true);
+	error_timer = 3.0;
+}
+
+fn text(world: World, id: []const u8, value: []const u8) : void {
+	const ui = world.ui() else return;
+	const e = ui.getDocument().getElementByID(id) else return;
+	e.setText(value);
+}
+
+fn setNumber(world: World, id: []const u8, value: i32) : void {
+	const module = world.ui() else return;
+	if not module.isReady() { return; }
+	const elem = module.getDocument().getElementByID(id) else return;
+	var buffer: [32]u8 = undefined;
+	var digits: [16]u8 = undefined;
+	var count: isize = 0;
+	var n = value;
+	if n < 0 { n = -n; }
+	while true {
+		digits[count] = ('0' as i32 + n % 10) as u8;
+		count += 1;
+		n /= 10;
+		if n == 0 { break; }
+	}
+	var len: isize = 0;
+	while count > 0 {
+		count -= 1;
+		buffer[len] = digits[count];
+		len += 1;
+	}
+	if value < 0 {
+		for i in 0 .. len { buffer[len - i] = buffer[len - i - 1]; }
+		buffer[0] = '-';
+		len += 1;
+	}
+	elem.setText(buffer[:len]);
+}
+
+fn display(world: World) : void {
+	setNumber(world, "resource_food", state.grain);
+	setNumber(world, "resource_water", state.water);
+	setNumber(world, "resource_wood", state.wood);
+	setNumber(world, "resource_stone", state.stone);
+	setNumber(world, "resource_tools", state.tools);
+	setNumber(world, "resource_gold", state.gold);
+	setNumber(world, "population", state.population);
+	setNumber(world, "population_limit", state.limit);
+	setNumber(world, "happiness", state.happiness);
+	setNumber(world, "actions", state.actions);
+}
+
+fn makeModel(world: World, path: []const u8, x: f32, z: f32) : Entity {
+	const e = world.createEntity();
+	e.setPosition({x as f64, 0, z as f64});
+	const model = e.createModelInstance() else return e;
+	model.setPath(path);
+	return e;
+}
+
+fn rowOffset(z: i32) : f32 {
+	var parity = z % 2;
+	if parity < 0 { parity += 2; }
+	return parity as f32 * HEX_X * 0.5;
+}
+
+fn treeCutModel(index: i32) : []const u8 {
+	if index <= 2 { return "hex/models/trees_A_cut.fbx"; }
+	if index <= 5 { return "hex/models/trees_B_cut.fbx"; }
+	if index == 6 { return "hex/models/tree_single_A_cut.fbx"; }
+	return "hex/models/tree_single_B_cut.fbx";
+}
+
+fn treeModel(index: i32) : []const u8 {
+	match index {
+		case 0: return "hex/models/trees_A_large.fbx";
+		case 1: return "hex/models/trees_A_medium.fbx";
+		case 2: return "hex/models/trees_A_small.fbx";
+		case 3: return "hex/models/trees_B_large.fbx";
+		case 4: return "hex/models/trees_B_medium.fbx";
+		case 5: return "hex/models/trees_B_small.fbx";
+		case 6: return "hex/models/tree_single_A.fbx";
+		case: return "hex/models/tree_single_B.fbx";
+	}
+}
+
+fn mountainModel(index: i32) : []const u8 {
+	match index {
+		case 0: return "hex/models/mountain_A.fbx";
+		case 1: return "hex/models/mountain_B.fbx";
+		case 2: return "hex/models/mountain_C.fbx";
+		case 3: return "hex/models/hill_single_A.fbx";
+		case 4: return "hex/models/hill_single_B.fbx";
+		case: return "hex/models/hill_single_C.fbx";
+	}
+}
+
+fn waterFeatureModel(index: i32) : []const u8 {
+	match index {
+		case 0: return "hex/models/waterlily_A.fbx";
+		case 1: return "hex/models/waterlily_B.fbx";
+		case 2: return "hex/models/waterplant_A.fbx";
+		case 3: return "hex/models/waterplant_B.fbx";
+		case: return "hex/models/waterplant_C.fbx";
+	}
+}
+
+fn mapPositionX(x: i32, z: i32) : f32 {
+	const center_x = ((GRID_W - 1) as f32 * HEX_X + (GRID_H % 2) as f32 * HEX_X * 0.5) * 0.5;
+	return x as f32 * HEX_X + rowOffset(z) - center_x;
+}
+
+fn mapPositionZ(z: i32) : f32 {
+	return z as f32 * HEX_Z - (GRID_H - 1) as f32 * HEX_Z * 0.5;
+}
+
+fn destroyPreview() : void {
+	if const preview = preview_entity { preview.destroy(); }
+	preview_entity = null;
+	preview_kind = "";
+}
+
+fn updatePreview(world: World) : void {
+	if selected_building == "" or not state.started {
+		destroyPreview();
+		return;
+	}
+	const idx = cellAtCursor();
+	if idx < 0 { destroyPreview(); return; }
+	if preview_kind != selected_building {
+		destroyPreview();
+		const preview = makeModel(world, buildingModel(selected_building), 0, 0);
+		preview.setScale({0.7, 0.7, 0.7});
+		preview_entity = preview;
+		preview_kind = selected_building;
+	}
+	if const preview = preview_entity {
+		const x = idx % GRID_W;
+		const z = idx / GRID_W;
+		preview.setPosition({mapPositionX(x, z) as f64, 0.1, mapPositionZ(z) as f64});
+	}
+}
+
+fn generateOuterWaterRing(world: World) : void {
+	var x: i32 = -2;
+	while x <= GRID_W + 1 {
+		makeModel(world, "hex/models/hex_water.fbx", mapPositionX(x, -2), mapPositionZ(-2));
+		makeModel(world, "hex/models/hex_water.fbx", mapPositionX(x, GRID_H + 1), mapPositionZ(GRID_H + 1));
+		x += 1;
+	}
+	var z: i32 = -1;
+	while z <= GRID_H {
+		makeModel(world, "hex/models/hex_water.fbx", mapPositionX(-2, z), mapPositionZ(z));
+		makeModel(world, "hex/models/hex_water.fbx", mapPositionX(GRID_W + 1, z), mapPositionZ(z));
+		z += 1;
+	}
+	x = -1;
+	while x <= GRID_W {
+		makeModel(world, "hex/models/hex_water.fbx", mapPositionX(x, -1), mapPositionZ(-1));
+		makeModel(world, "hex/models/hex_water.fbx", mapPositionX(x, GRID_H), mapPositionZ(GRID_H));
+		x += 1;
+	}
+	z = 0;
+	while z < GRID_H {
+		makeModel(world, "hex/models/hex_water.fbx", mapPositionX(-1, z), mapPositionZ(z));
+		makeModel(world, "hex/models/hex_water.fbx", mapPositionX(GRID_W, z), mapPositionZ(z));
+		z += 1;
+	}
+}
+
+fn generateMap(world: World) : void {
+	var y: i32 = 0;
+	while y < GRID_H {
+		var x: i32 = 0;
+		while x < GRID_W {
+			const px = mapPositionX(x, y);
+			const pz = mapPositionZ(y);
+			const idx = y * GRID_W + x;
+			tree_entities[idx] = null;
+			stump_entities[idx] = null;
+			tree_model_indices[idx] = -1;
+			water_tiles[idx] = false;
+			mountain_tiles[idx] = false;
+			owned_tiles[idx] = false;
+			occupied_tiles[idx] = false;
+			building_names[idx] = "";
+			const center_tile = x == 15 and y == 10;
+			const roll = random.randFloatRange(0, 1);
+			const is_water = not center_tile and roll < 0.03;
+			if is_water {
+				water_tiles[idx] = true;
+				makeModel(world, "hex/models/hex_water.fbx", px, pz);
+				for feature_idx in 0 .. 8 {
+					const angle = random.randFloatRange(0, 6.2831853);
+					const radius = random.randFloatRange(0, 0.8);
+					const fx = px + math.cos(angle) * radius;
+					const fz = pz + math.sin(angle) * radius;
+					const path = waterFeatureModel(random.randRange(0, 4) as i32);
+					makeModel(world, path, fx, fz);
+				}
+			}
+			else {
+				makeModel(world, "hex/models/hex_grass.fbx", px, pz);
+				if not center_tile and roll < 0.03 + 0.75 {
+					tree_model_indices[idx] = random.randRange(0, 7) as i32;
+					tree_entities[idx] = makeModel(world, treeModel(tree_model_indices[idx]), px, pz);
+				}
+				else if not center_tile and roll < 0.03 + 0.75 + 0.10 {
+					mountain_tiles[idx] = true;
+					makeModel(world, mountainModel(random.randRange(0, 5) as i32), px, pz);
+				}
+			}
+			x += 1;
+		}
+		y += 1;
+	}
+	generateOuterWaterRing(world);
+	const castle_x: i32 = 15;
+	const castle_z: i32 = 10;
+	const castle_idx = castle_z * GRID_W + castle_x;
+	const castle_px = castle_x as f32 * HEX_X + (castle_z % 2) as f32 * HEX_X * 0.5 - ((GRID_W - 1) as f32 * HEX_X + (GRID_H % 2) as f32 * HEX_X * 0.5) * 0.5;
+	const castle_pz = castle_z as f32 * HEX_Z - (GRID_H - 1) as f32 * HEX_Z * 0.5;
+	makeModel(world, "hex/models/building_castle_blue.fbx", castle_px, castle_pz);
+	owned_tiles[castle_idx] = true;
+	occupied_tiles[castle_idx] = true;
+	building_names[castle_idx] = "castle";
+}
+
+fn startGame(world: World) : void {
+	if state.started { return; }
+	state.started = true;
+	generateMap(world);
+	show(world, "menu_root", false);
+	show(world, "hud_root", true);
+	show(world, "game_controls", true);
+	show(world, "turn_controls", true);
+	display(world);
+}
+
+fn nextTurn(world: World) : void {
+	if not state.started or state.population <= 0 { return; }
+	const old_population = state.population;
+	const old_grain = state.grain;
+	const old_water = state.water;
+	const old_wood = state.wood;
+	const old_stone = state.stone;
+	const old_tools = state.tools;
+	const old_happiness = state.happiness;
+	const old_actions = state.actions;
+	state.turn += 1;
+	var industry: i32 = 0;
+	var taverns: i32 = 0;
+	var bonus_actions: i32 = 0;
+	// Apply production from placed buildings before population consumption.
+	for name in building_names {
+		const def = getBuildingType(name) else continue;
+		state.grain += def.per_turn.grain;
+		state.water += def.per_turn.water;
+		state.wood += def.per_turn.wood;
+		state.stone += def.per_turn.stone;
+		state.tools += def.per_turn.tools;
+		bonus_actions += def.per_turn.actions;
+		if name == "mine" or name == "lumbermill" { industry += 1; }
+		if name == "tavern" { taverns += 1; }
+	}
+	// Population consumes available food and water. Each independently missing
+	// ration costs one person, matching the original Lua turn sequence.
+	const before_consumption = state.population;
+	const grain_used = before_consumption < state.grain ? before_consumption : state.grain;
+	const water_used = before_consumption < state.water ? before_consumption : state.water;
+	state.grain -= grain_used;
+	state.water -= water_used;
+	state.population -= (before_consumption - grain_used) + (before_consumption - water_used);
+	if state.population < 0 { state.population = 0; }
+	if state.happiness <= 0 and state.population > 0 { state.population -= 1; }
+	state.happiness = 5 - state.population - industry + taverns * 10;
+	if state.happiness > 0 and state.population < state.limit and state.grain >= state.population + 1 and state.water >= state.population + 1 {
+		state.population += 1;
+	}
+	state.actions = state.population + bonus_actions;
+	if state.happiness <= 0 { state.actions /= 2; }
+	display(world);
+	if state.population <= 0 {
+		show(world, "game_over", true);
+		return;
+	}
+	setNumber(world, "turn_number", state.turn);
+	setNumber(world, "turn_population_delta", state.population - old_population);
+	setNumber(world, "turn_food_delta", state.grain - old_grain);
+	setNumber(world, "turn_water_delta", state.water - old_water);
+	setNumber(world, "turn_wood_delta", state.wood - old_wood);
+	setNumber(world, "turn_stone_delta", state.stone - old_stone);
+	setNumber(world, "turn_tools_delta", state.tools - old_tools);
+	setNumber(world, "turn_happiness_delta", state.happiness - old_happiness);
+	setNumber(world, "turn_actions_delta", state.actions - old_actions);
+	show(world, "turn_popup", true);
+	turn_popup_timer = 2.0;
+}
+
+fn floori(v: f32) : i32 {
+	const i = v as i32;
+	if v < i as f32 { return i - 1; }
+	return i;
+}
+
+fn cellAtCursor() : i32 {
+	const camera = camera_component else return -1;
+	const ray = camera.getRay(Vec2 {mouse_x, mouse_y});
+	if ray.dir.y == 0 { return -1; }
+	const t = -ray.origin.y / ray.dir.y as f64;
+	if t < 0 { return -1; }
+	const wx = (ray.origin.x + ray.dir.x as f64 * t) as f32;
+	const wz = (ray.origin.z + ray.dir.z as f64 * t) as f32;
+	const center_x = ((GRID_W - 1) as f32 * HEX_X + (GRID_H % 2) as f32 * HEX_X * 0.5) * 0.5;
+	const center_z = (GRID_H - 1) as f32 * HEX_Z * 0.5;
+	const z = floori((wz + center_z) / HEX_Z + 0.5);
+	const x = floori((wx + center_x - (z % 2) as f32 * HEX_X * 0.5) / HEX_X + 0.5);
+	if x < 0 or x >= GRID_W or z < 0 or z >= GRID_H { return -1; }
+	return z * GRID_W + x;
+}
+
+fn getBuildingType(name: []const u8) : ?building_catalog.BuildingType {
+	for building in building_catalog.BUILDING_TYPES {
+		if building.name == name { return building; }
+	}
+	return null;
+}
+
+fn selectBuilding(world: World, name: []const u8) : void {
+	const def = getBuildingType(name) else return;
+	if not def.unlocked {
+		showError(world, "That building is locked.");
+		return;
+	}
+	selected_building = name;
+	cutting_mode = false;
+}
+
+fn buildingModel(name: []const u8) : []const u8 {
+	match name {
+		case "home": return "hex/models/building_home_A_blue.fbx";
+		case "field": return "hex/models/building_grain.fbx";
+		case "well": return "hex/models/building_well_blue.fbx";
+		case "mine": return "hex/models/building_mine_blue.fbx";
+		case "lumbermill": return "hex/models/building_lumbermill_blue.fbx";
+		case "tavern": return "hex/models/building_tavern_blue.fbx";
+		case "blacksmith": return "hex/models/building_blacksmith_blue.fbx";
+		case "windmill": return "hex/models/building_windmill_blue.fbx";
+		case "market": return "hex/models/building_market_blue.fbx";
+		case: return "";
+	}
+}
+
+fn canAfford(cost: building_catalog.ResourceAmounts) : bool {
+	return state.actions > 0 and state.stone >= cost.stone and state.wood >= cost.wood and state.tools >= cost.tools and state.grain >= cost.grain and state.water >= cost.water and state.gold >= 0;
+}
+
+fn placeBuildingAtCursor(world: World) : void {
+	if selected_building == "" or not state.started { return; }
+	const idx = cellAtCursor();
+	if idx < 0 { showError(world, "Select a map tile first."); return; }
+	const def = getBuildingType(selected_building) else { showError(world, "Unknown building."); return; };
+	if not def.unlocked { showError(world, "That building is locked."); return; }
+	if occupied_tiles[idx] { showError(world, "This tile already has a building."); return; }
+	if water_tiles[idx] { showError(world, "Cannot build on water."); return; }
+	if tree_entities[idx] != null { showError(world, "Cut trees before building here."); return; }
+	if mountain_tiles[idx] and selected_building != "mine" { showError(world, "Only a mine can be built on mountains."); return; }
+	if selected_building == "mine" and not mountain_tiles[idx] { showError(world, "Mines require a mountain tile."); return; }
+	if state.actions <= 0 { showError(world, "No actions remaining this turn."); return; }
+	if not canAfford(def.cost) { showError(world, "Not enough resources for this building."); return; }
+	const x = idx % GRID_W;
+	const z = idx / GRID_W;
+	var adjacent = false;
+	var dz: i32 = -1;
+	while dz <= 1 {
+		var dx: i32 = -1;
+		while dx <= 1 {
+			const nx = x + dx;
+			const nz = z + dz;
+			if (nx >= 0 and nx < GRID_W and nz >= 0 and nz < GRID_H and owned_tiles[nz * GRID_W + nx]) { adjacent = true; }
+			dx += 1;
+		}
+		dz += 1;
+	}
+	if not adjacent { showError(world, "Build adjacent to an owned tile."); return; }
+	if selected_building == "well" {
+		var near_water = false;
+		var dz2: i32 = -1;
+		while dz2 <= 1 {
+			var dx2: i32 = -1;
+			while dx2 <= 1 {
+				const nx = x + dx2;
+				const nz = z + dz2;
+				if nx >= 0 and nx < GRID_W and nz >= 0 and nz < GRID_H and water_tiles[nz * GRID_W + nx] { near_water = true; }
+				dx2 += 1;
+			}
+			dz2 += 1;
+		}
+		if not near_water { showError(world, "Wells must be adjacent to water."); return; }
+	}
+	if selected_building == "lumbermill" {
+		var near_trees = false;
+		var dz3: i32 = -1;
+		while dz3 <= 1 {
+			var dx3: i32 = -1;
+			while dx3 <= 1 {
+				const nx = x + dx3;
+				const nz = z + dz3;
+				if nx >= 0 and nx < GRID_W and nz >= 0 and nz < GRID_H and tree_entities[nz * GRID_W + nx] != null { near_trees = true; }
+				dx3 += 1;
+			}
+			dz3 += 1;
+		}
+		if not near_trees { showError(world, "Lumbermills must be adjacent to trees."); return; }
+	}
+	const px = x as f32 * HEX_X + (z % 2) as f32 * HEX_X * 0.5 - ((GRID_W - 1) as f32 * HEX_X + (GRID_H % 2) as f32 * HEX_X * 0.5) * 0.5;
+	const pz = z as f32 * HEX_Z - (GRID_H - 1) as f32 * HEX_Z * 0.5;
+	if const stump = stump_entities[idx] { stump.destroy(); stump_entities[idx] = null; }
+	makeModel(world, buildingModel(selected_building), px, pz);
+	state.stone -= def.cost.stone;
+	state.wood -= def.cost.wood;
+	state.tools -= def.cost.tools;
+	state.grain -= def.cost.grain;
+	state.water -= def.cost.water;
+	state.actions -= 1;
+	occupied_tiles[idx] = true;
+	owned_tiles[idx] = true;
+	building_names[idx] = selected_building;
+	state.limit += def.one_time.population_limit;
+	state.happiness += def.one_time.happiness;
+	selected_building = "";
+	destroyPreview();
+	display(world);
+}
+
+fn updateTreeHover(world: World, dt: f32) : void {
+	var next_idx: i32 = -1;
+	if cutting_mode and state.started { next_idx = cellAtCursor(); }
+	if next_idx >= 0 and tree_entities[next_idx] == null { next_idx = -1; }
+	if next_idx != hovered_tree_idx {
+		if hovered_tree_idx >= 0 {
+			if const old_tree = tree_entities[hovered_tree_idx] {
+				var old_pos = old_tree.getPosition();
+				old_pos.y = 0;
+				old_tree.setPosition(old_pos);
+			}
+		}
+		hovered_tree_idx = next_idx;
+		tree_hover_time = 0;
+	}
+	if hovered_tree_idx >= 0 {
+		if const tree = tree_entities[hovered_tree_idx] {
+			tree_hover_time += dt * 2.0;
+			var pos = tree.getPosition();
+			pos.y = (math.sin(tree_hover_time) * 0.3) as f64;
+			tree.setPosition(pos);
+		}
+	}
+}
+
+fn cutTreeAtCursor(world: World) : void {
+	if not cutting_mode or not state.started { return; }
+	const idx = cellAtCursor();
+	if idx < 0 { showError(world, "Select a map tile first."); return; }
+	if state.actions <= 0 { showError(world, "No actions remaining this turn."); return; }
+	if state.tools <= 0 { showError(world, "You need a tool to cut trees."); return; }
+	if const tree = tree_entities[idx] {
+		var tree_pos = tree.getPosition();
+		tree_pos.y = 0;
+		tree.setPosition(tree_pos);
+		if const model = tree.modelInstance() { model.setPath(treeCutModel(tree_model_indices[idx])); }
+		stump_entities[idx] = tree;
+		tree_entities[idx] = null;
+		hovered_tree_idx = -1;
+		state.wood += 4;
+		state.tools -= 1;
+		state.actions -= 1;
+		cutting_mode = false;
+		display(world);
+		return;
+	}
+	showError(world, "No tree on the selected tile.");
+}
+
+fn updateCamera(input_system: InputSystem, world: World, dt: f32) : void {
+	for event in input_system.getEvents() {
+		match event {
+			case ButtonEvent: {
+				if event.device_type == .KEYBOARD {
+					match event.key_id as Keycode {
+						case .W: move_forward = event.down;
+						case .S: move_back = event.down;
+						case .A: move_left = event.down;
+						case .D: move_right = event.down;
+						case .Q: zoom_in = event.down;
+						case .E: zoom_out = event.down;
+						case .ESCAPE: if event.down { selected_building = ""; cutting_mode = false; destroyPreview(); }
+						case:
+					}
+				}
+				// Mouse button ids are zero-based in InputSystem: 0=left, 1=right.
+				else if event.device_type == .MOUSE and event.key_id == 0 and event.down {
+					if cutting_mode { cutTreeAtCursor(world); }
+					else if selected_building != "" { placeBuildingAtCursor(world); }
+				}
+				else if event.device_type == .MOUSE and event.key_id == 1 {
+					panning = event.down;
+					last_mouse_x = mouse_x;
+					last_mouse_y = mouse_y;
+					if const u = world.ui() { u.getSystem().enableCursor(not panning); }
+				}
+			}
+			case AxisEvent: {
+				if event.device_type == .MOUSE { mouse_x = event.x_abs; mouse_y = event.y_abs; }
+			}
+			case MouseWheelEvent: { wheel_delta += event.y; }
+			case: {}
+		}
+	}
+	const e = game_camera else return;
+	var pos = e.getPosition();
+	var dx: f32 = 0;
+	var dz: f32 = 0;
+	if move_right { dx += 1; }
+	if move_left { dx -= 1; }
+	if move_back { dz += 1; }
+	if move_forward { dz -= 1; }
+	var zoom: f32 = 0;
+	if zoom_out { zoom += 1; }
+	if zoom_in { zoom -= 1; }
+	const speed = 20.0 * dt;
+	pos.x += dx as f64 * speed as f64;
+	pos.z += dz as f64 * speed as f64;
+	if panning {
+		pos.x -= (mouse_x - last_mouse_x) as f64 * 0.03;
+		pos.z -= (mouse_y - last_mouse_y) as f64 * 0.03;
+		last_mouse_x = mouse_x;
+		last_mouse_y = mouse_y;
+	}
+	var height = pos.y as f32;
+	height += zoom * 10.0 * dt;
+	height -= wheel_delta * 3.0;
+	wheel_delta = 0;
+	if height < 10 { height = 10; }
+	if height > 100 { height = 100; }
+	pos.y = height as f64;
+	if pos.x < -40 { pos.x = -40; }
+	if pos.x > 40 { pos.x = 40; }
+	if pos.z < -30 { pos.z = -30; }
+	if pos.z > 30 { pos.z = 30; }
+	e.setPosition(pos);
+	updateTreeHover(world, dt);
+	updatePreview(world);
+}
+
+fn main(engine: Engine, world: World) : void {
+	// Match the Lua scene's perspective camera pose and lens.
+	const camera_entity = world.createEntity();
+	camera_entity.setName("main_camera");
+	camera_entity.setPosition({0, 15, 15});
+	camera_entity.setRotation({-0.38941833, 0, 0, 0.92106098});
+	game_camera = camera_entity;
+	const camera = camera_entity.createCamera() else panic("Hex requires a renderer camera");
+	camera_component = camera;
+	camera.setIsOrtho(false);
+	camera.setFov(1.0471976);
+	camera.setNear(0.1);
+	camera.setFar(1000);
+	show(world, "menu_root", true);
+	show(world, "hud_root", false);
+	const ui = world.ui() else panic("Hex requires a UI document");
+	ui.getSystem().enableCursor(true);
+	const input_system = input(engine);
+	while true {
+		const time_delta: f32 = yield;
+		if time_delta < 0 { break; }
+		updateCamera(input_system, world, time_delta);
+		if error_timer > 0 {
+			error_timer -= time_delta;
+			if error_timer <= 0 { show(world, "error_popup", false); }
+		}
+		if turn_popup_timer > 0 {
+			turn_popup_timer -= time_delta;
+			if turn_popup_timer <= 0 { show(world, "turn_popup", false); }
+		}
+		if not ui.isReady() { continue; }
+		for event in ui.getDocument().getEvents() {
+			if event.type != EventType.ACTION { continue; }
+			match event.action {
+				case "start_game": startGame(world);
+				case "next_turn": nextTurn(world);
+				case "cut_trees": if state.started { cutting_mode = true; selected_building = ""; }
+				case "build_home": if state.started { selectBuilding(world, "home"); }
+				case "build_field": if state.started { selectBuilding(world, "field"); }
+				case "build_well": if state.started { selectBuilding(world, "well"); }
+				case "build_mine": if state.started { selectBuilding(world, "mine"); }
+				case "build_lumbermill": if state.started { selectBuilding(world, "lumbermill"); }
+				case "build_tavern": if state.started { selectBuilding(world, "tavern"); }
+				case "build_blacksmith": if state.started { selectBuilding(world, "blacksmith"); }
+				case "build_windmill": if state.started { selectBuilding(world, "windmill"); }
+				case "build_market": if state.started { selectBuilding(world, "market"); }
+				case "exit_game": show(world, "menu_root", false);
+				case:
+			}
+		}
+		updateActionHighlight(world);
+	}
+}

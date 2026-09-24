@@ -1,0 +1,258 @@
+struct ResourceAmounts {
+	stone : i32;
+	wood : i32;
+	tools : i32;
+	grain : i32;
+	water : i32;
+	happiness : i32;
+	population_limit : i32;
+	actions : i32;
+}
+
+struct BuildingType {
+	name : []const u8;
+	models : []const []const u8;
+	cost : ResourceAmounts;
+	one_time : ResourceAmounts;
+	per_turn : ResourceAmounts;
+	unlocked : bool;
+}
+
+const NONE = ResourceAmounts {
+	.stone = 0,
+	.wood = 0,
+	.tools = 0,
+	.grain = 0,
+	.water = 0,
+	.happiness = 0,
+	.population_limit = 0,
+	.actions = 0
+};
+
+const BUILDING_TYPES : [] BuildingType = [
+	{
+		"home",
+		["building_home_A_green.fbx", "building_home_A_blue.fbx"],
+		ResourceAmounts {
+			.stone = 2,
+			.wood = 2,
+			.tools = 1,
+			.grain = 0,
+			.water = 0,
+			.happiness = 0,
+			.population_limit = 0,
+			.actions = 0
+		},
+		ResourceAmounts {
+			.stone = 0,
+			.wood = 0,
+			.tools = 0,
+			.grain = 0,
+			.water = 0,
+			.happiness = 0,
+			.population_limit = 1,
+			.actions = 0
+		},
+		NONE,
+		true
+	},
+	{
+		"field",
+		["building_grain.fbx"],
+		ResourceAmounts {
+			.stone = 0,
+			.wood = 1,
+			.tools = 1,
+			.grain = 0,
+			.water = 0,
+			.happiness = 0,
+			.population_limit = 0,
+			.actions = 0
+		},
+		NONE,
+		ResourceAmounts {
+			.stone = 0,
+			.wood = 0,
+			.tools = 0,
+			.grain = 1,
+			.water = 0,
+			.happiness = 0,
+			.population_limit = 0,
+			.actions = 0
+		},
+		true
+	},
+	{
+		"well",
+		["building_well_blue.fbx", "building_well_green.fbx"],
+		ResourceAmounts {
+			.stone = 2,
+			.wood = 1,
+			.tools = 1,
+			.grain = 0,
+			.water = 0,
+			.happiness = 0,
+			.population_limit = 0,
+			.actions = 0
+		},
+		NONE,
+		ResourceAmounts {
+			.stone = 0,
+			.wood = 0,
+			.tools = 0,
+			.grain = 0,
+			.water = 1,
+			.happiness = 0,
+			.population_limit = 0,
+			.actions = 0
+		},
+		true
+	},
+	{
+		"mine",
+		["building_mine_blue.fbx", "building_mine_green.fbx"],
+		ResourceAmounts {
+			.stone = 2,
+			.wood = 4,
+			.tools = 3,
+			.grain = 0,
+			.water = 0,
+			.happiness = 0,
+			.population_limit = 0,
+			.actions = 0
+		},
+		NONE,
+		ResourceAmounts {
+			.stone = 1,
+			.wood = 0,
+			.tools = 0,
+			.grain = 0,
+			.water = 0,
+			.happiness = 0,
+			.population_limit = 0,
+			.actions = 0
+		},
+		false
+	},
+	{
+		"lumbermill",
+		["building_lumbermill_blue.fbx", "building_lumbermill_green.fbx"],
+		ResourceAmounts {
+			.stone = 1,
+			.wood = 1,
+			.tools = 1,
+			.grain = 0,
+			.water = 0,
+			.happiness = 0,
+			.population_limit = 0,
+			.actions = 0
+		},
+		NONE,
+		ResourceAmounts {
+			.stone = 0,
+			.wood = 1,
+			.tools = 0,
+			.grain = 0,
+			.water = 0,
+			.happiness = 0,
+			.population_limit = 0,
+			.actions = 0
+		},
+		false
+	},
+	{
+		"tavern",
+		["building_tavern_blue.fbx", "building_tavern_green.fbx"],
+		ResourceAmounts {
+			.stone = 3,
+			.wood = 3,
+			.tools = 2,
+			.grain = 0,
+			.water = 0,
+			.happiness = 0,
+			.population_limit = 0,
+			.actions = 0
+		},
+		ResourceAmounts {
+			.stone = 0,
+			.wood = 0,
+			.tools = 0,
+			.grain = 0,
+			.water = 0,
+			.happiness = 10,
+			.population_limit = 0,
+			.actions = 0
+		},
+		NONE,
+		false
+	},
+	{
+		"blacksmith",
+		["building_blacksmith_blue.fbx", "building_blacksmith_green.fbx"],
+		ResourceAmounts {
+			.stone = 3,
+			.wood = 3,
+			.tools = 3,
+			.grain = 0,
+			.water = 0,
+			.happiness = 0,
+			.population_limit = 0,
+			.actions = 0
+		},
+		NONE,
+		ResourceAmounts {
+			.stone = 0,
+			.wood = 0,
+			.tools = 1,
+			.grain = 0,
+			.water = 0,
+			.happiness = 0,
+			.population_limit = 0,
+			.actions = 0
+		},
+		false
+	},
+	{
+		"windmill",
+		["building_windmill_blue.fbx", "building_windmill_green.fbx"],
+		ResourceAmounts {
+			.stone = 3,
+			.wood = 2,
+			.tools = 4,
+			.grain = 0,
+			.water = 0,
+			.happiness = 0,
+			.population_limit = 0,
+			.actions = 0
+		},
+		NONE,
+		ResourceAmounts {
+			.stone = 0,
+			.wood = 0,
+			.tools = 0,
+			.grain = 0,
+			.water = 0,
+			.happiness = 0,
+			.population_limit = 0,
+			.actions = 1
+		},
+		false
+	},
+	{
+		"market",
+		["building_market_blue.fbx", "building_market_green.fbx"],
+		ResourceAmounts {
+			.stone = 5,
+			.wood = 5,
+			.tools = 5,
+			.grain = 0,
+			.water = 0,
+			.happiness = 0,
+			.population_limit = 0,
+			.actions = 0
+		},
+		NONE,
+		NONE,
+		false
+	}
+];

@@ -1,0 +1,149 @@
+[style] {
+	.resource_icon {
+		width: 1.15em;
+		height: 1.15em;
+		margin-right: 0.28em;
+	}
+	.stat {
+		padding: 0.2em;
+		margin-right: 0.35em;
+		bg-color: #364346cc;
+	}
+	.building_icon {
+		width: 1.45em;
+		height: 1.45em;
+		margin-right: 0.45em;
+	}
+	.control {
+		width: 12em;
+		height: 2em;
+		padding: 0.3em;
+		margin: 0.12em;
+		bg-color: #405452ee;
+	}
+	.control:hover {
+		bg-color: #667e67;
+	}
+	.locked {
+		color: #c3c7ad;
+		bg-color: #354345dd;
+	}
+	.locked:hover {
+		bg-color: #52605adf;
+	}
+	.menu_button {
+		width: 13em;
+		padding: 0.55em;
+		margin: 0.16em;
+		align: center;
+		bg-color: #415b57;
+	}
+	.menu_button:hover {
+		bg-color: #788e69;
+	}
+	.delta {
+		width: 9em;
+		padding: 0.2em;
+	}
+}
+
+[box width=100% height=100% font="ui/font/Kenney Future.ttf" font-size=23 color=#f5edcf] {
+	// Dark, legible HUD with resources on the left and settlement status on the right.
+	[box $hud_root visible=false position=absolute left=0 top=0 width=100% height=2.3em direction=row wrap=false align-items=center bg-color=#202f35e8 padding=0.35em] {
+		[box direction=row wrap=false align-items=center] {
+			[box .stat direction=row align-items=center] { [box bg-image="hex/ui/food.spr" .resource_icon] {} [box] { [span $resource_food text="2"] } }
+			[box .stat direction=row align-items=center] { [box bg-image="hex/ui/water.spr" .resource_icon] {} [box] { [span $resource_water text="2"] } }
+			[box .stat direction=row align-items=center] { [box bg-image="hex/ui/wood.spr" .resource_icon] {} [box] { [span $resource_wood text="2"] } }
+			[box .stat direction=row align-items=center] { [box bg-image="hex/ui/stone.spr" .resource_icon] {} [box] { [span $resource_stone text="2"] } }
+			[box .stat direction=row align-items=center] { [box bg-image="hex/ui/tools.spr" .resource_icon] {} [box] { [span $resource_tools text="2"] } }
+			[box .stat direction=row align-items=center] { [box bg-image="hex/ui/gold.spr" .resource_icon] {} [box] { [span $resource_gold text="2"] } }
+		}
+		[box grow=1] {}
+		[box direction=row wrap=false align-items=center] {
+			[box .stat direction=row wrap=false align-items=center] {
+				[box bg-image="hex/ui/person.spr" .resource_icon] {}
+				[box wrap=false] { [span $population text="1"] }
+				[box wrap=false] { / }
+				[box wrap=false] { [span $population_limit text="10"] }
+			}
+			[box .stat direction=row align-items=center] { [box bg-image="hex/ui/happiness.spr" .resource_icon] {} [box] { [span $happiness text="2"] } }
+			[box .stat direction=row align-items=center] { [box bg-image="hex/ui/actions.spr" .resource_icon] {} [box] { [span $actions text="2"] } }
+		}
+	}
+
+	// Title screen: a centered card rather than a full-height side slab.
+	[box $menu_root position=absolute left=0 top=0 width=100% height=100% bg-color=#152528b3 align-items=center justify-content=center] {
+		[box width=16em padding=1em bg-color=#23383aee align-items=center] {
+			[box color=#e9c47b font-size=40 margin=0.3em align=center] { HEX GAME }
+			[box color=#b9cbbb margin=0.5em align=center] { Build a settlement. Make it last. }
+			[box .menu_button on-click=start_game] { Start game }
+			[box .menu_button on-click=settings] { Settings }
+			[box .menu_button on-click=upgrades] { Upgrades }
+			[box .menu_button on-click=exit_game] { Exit }
+		}
+	}
+
+	// Construction dock: two short columns, grouped by availability.
+	[box $game_controls visible=false position=absolute left=0.7em top=96% pivot-y=100% direction=column padding=0.55em bg-color=#203238eb] {
+		[box color=#e9c47b margin=0.2em] { SETTLEMENT }
+		[box direction=row] {
+			[box .control direction=row align-items=center on-click=cut_trees] { [box $selected_cut visible=false position=absolute left=0 top=0 width=100% height=100% bg-color=#d8ac5688] {} [box bg-image="hex/ui/axe.spr" .building_icon] {} [box] { Cut trees } }
+			[box .control direction=row align-items=center on-click=build_home] { [box $selected_home visible=false position=absolute left=0 top=0 width=100% height=100% bg-color=#d8ac5688] {} [box bg-image="hex/ui/house.spr" .building_icon] {} [box] { Home } }
+		}
+		[box direction=row] {
+			[box .control direction=row align-items=center on-click=build_field] { [box $selected_field visible=false position=absolute left=0 top=0 width=100% height=100% bg-color=#d8ac5688] {} [box bg-image="hex/ui/field.spr" .building_icon] {} [box] { Field } }
+			[box .control direction=row align-items=center on-click=build_well] { [box $selected_well visible=false position=absolute left=0 top=0 width=100% height=100% bg-color=#d8ac5688] {} [box bg-image="hex/ui/well.spr" .building_icon] {} [box] { Well } }
+		}
+		[box color=#b9cbbb margin=0.2em] { COMING SOON }
+		[box direction=row] {
+			[box .control .locked direction=row align-items=center on-click=build_mine] { [box $selected_mine visible=false position=absolute left=0 top=0 width=100% height=100% bg-color=#d8ac5688] {} [box bg-image="hex/ui/mine.spr" .building_icon] {} [box] { Mine } }
+			[box .control .locked direction=row align-items=center on-click=build_lumbermill] { [box $selected_lumbermill visible=false position=absolute left=0 top=0 width=100% height=100% bg-color=#d8ac5688] {} [box bg-image="hex/ui/lumbermill.spr" .building_icon] {} [box] { Lumbermill } }
+		}
+		[box direction=row] {
+			[box .control .locked direction=row align-items=center on-click=build_tavern] { [box $selected_tavern visible=false position=absolute left=0 top=0 width=100% height=100% bg-color=#d8ac5688] {} [box bg-image="hex/ui/tavern.spr" .building_icon] {} [box] { Tavern } }
+			[box .control .locked direction=row align-items=center on-click=build_blacksmith] { [box $selected_blacksmith visible=false position=absolute left=0 top=0 width=100% height=100% bg-color=#d8ac5688] {} [box bg-image="hex/ui/blacksmith.spr" .building_icon] {} [box] { Blacksmith } }
+		}
+		[box direction=row] {
+			[box .control .locked direction=row align-items=center on-click=build_windmill] { [box $selected_windmill visible=false position=absolute left=0 top=0 width=100% height=100% bg-color=#d8ac5688] {} [box bg-image="hex/ui/windmill.spr" .building_icon] {} [box] { Windmill } }
+			[box .control .locked direction=row align-items=center on-click=build_market] { [box $selected_market visible=false position=absolute left=0 top=0 width=100% height=100% bg-color=#d8ac5688] {} [box bg-image="hex/ui/market.spr" .building_icon] {} [box] { Market } }
+		}
+	}
+	[box $turn_controls visible=false position=absolute left=100% pivot-x=100% top=96% pivot-y=100% padding=0.7em] {
+		[box on-click=next_turn direction=row align-items=center width=9em height=2.2em padding=0.4em bg-color=#af7942] {
+			[box bg-image="hex/ui/next_turn.spr" .building_icon] {}
+			[box] { Next turn }
+		}
+	}
+
+	[box $error_popup visible=false position=absolute left=50% pivot-x=50% top=3.4em bg-color=#813e3bee padding=0.6em] {
+		[span $error_message text=""]
+	}
+
+	[box $turn_popup visible=false position=absolute left=50% pivot-x=50% top=3.4em width=20em bg-color=#23383af2 padding=0.7em] {
+		[box direction=row color=#e9c47b] {
+			[box margin-right=0.4em] { TURN }
+			[box margin-right=0.4em] { [span $turn_number text="0"] }
+			[box] { COMPLETE }
+		}
+		[box direction=row] {
+			[box .delta] { Population: [span $turn_population_delta text="0"] }
+			[box .delta] { Food: [span $turn_food_delta text="0"] }
+		}
+		[box direction=row] {
+			[box .delta] { Water: [span $turn_water_delta text="0"] }
+			[box .delta] { Wood: [span $turn_wood_delta text="0"] }
+		}
+		[box direction=row] {
+			[box .delta] { Stone: [span $turn_stone_delta text="0"] }
+			[box .delta] { Tools: [span $turn_tools_delta text="0"] }
+		}
+		[box direction=row] {
+			[box .delta] { Happiness: [span $turn_happiness_delta text="0"] }
+			[box .delta] { Actions: [span $turn_actions_delta text="0"] }
+		}
+	}
+
+	[box $game_over visible=false position=absolute left=50% pivot-x=50% top=50% pivot-y=50% align=center bg-color=#23383af2 padding=2em font-size=38 color=#e9c47b] {
+		Settlement lost
+	}
+}

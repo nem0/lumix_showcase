@@ -5,6 +5,7 @@ import "chess/chess" as chess
 import "asteroids/asteroids" as asteroids
 import "tower_defense/tower_defense" as tower_defense
 import "platformer/platformer" as platformer
+import "hex/hex" as hex
 
 fn main(engine : Engine, w : World) : void {
 	const input_system = input(engine);
@@ -14,6 +15,7 @@ fn main(engine : Engine, w : World) : void {
 		case "asteroids/asteroids.unv": asteroids.main(input_system, w);
 		case "tower_defense/tower_defense.unv": tower_defense.main(input_system, w);
 		case "platformer/platformer.unv": platformer.main(engine, w);
+		case "hex/hex.unv": hex.main(engine, w);
 		case: panic("Unknown world");
 	}
 }

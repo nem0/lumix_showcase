@@ -362,7 +362,7 @@ fn processTriggers(world : World) : void {
 				lives += 1;
 				playSound(world, "platformer/audio/sfx_sounds_powerup5.ogg");
 				updateLivesUI(world);
-				if const model = life.owner.model_instance() {
+				if const model = life.owner.modelInstance() {
 					model.setEnabled(false);
 				}
 			}
@@ -377,7 +377,7 @@ fn processTriggers(world : World) : void {
 				coins += 1;
 				playSound(world, "platformer/audio/sfx_coin_single1.ogg");
 				updateCoinsUI(world);
-				if const model = coin.owner.model_instance() {
+				if const model = coin.owner.modelInstance() {
 					model.setEnabled(false);
 				}
 			}
@@ -393,7 +393,7 @@ fn processTriggers(world : World) : void {
 				or hit.e1 == controller or hit.e2 == controller;
 			if trap.active and trap_hit and player_hit and not hit.touch_lost {
 				trap.active = false;
-				if const model = trap.owner.model_instance() {
+				if const model = trap.owner.modelInstance() {
 					model.setPath("platformer/models/BearTrap_Closed.fbx");
 				}
 				killPlayer(world);
@@ -483,7 +483,7 @@ fn handleEvents(input : InputSystem, world : World) : void {
 fn setMusicEnabled(world : World, enabled : bool) : void {
 	const environment = world.findByName("environment") else panic("Missing environment entity");
 	const music_entity = environment.findChildByName("music") else panic("Missing music entity");
-	const music = ambient_sound.ambient_sound(music_entity) else panic("Missing ambient sound");
+	const music = ambient_sound.ambientSound(music_entity) else panic("Missing ambient sound");
 	if enabled {
 		ambient_sound.resume(music);
 	}
@@ -559,7 +559,7 @@ fn move(w : World, td : f32) : void {
 	var position = e.getPosition();
 	position.z = -4;
 	e.setPosition(position);
-	var ctrl = phy_ctrl.physical_controller(e) else panic("Invalid scene structure");
+	var ctrl = phy_ctrl.physicalController(e) else panic("Invalid scene structure");
 
 	var movement_speed = speed;
 	if slow {

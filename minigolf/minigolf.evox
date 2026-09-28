@@ -1,0 +1,390 @@
+import "core:engine/engine"
+import "core:input" as inp
+import "core:world"
+import "core:entity"
+import "core:renderer/model_instance"
+import "core:dvec3"
+import "core:renderer/camera"
+import "core:renderer/module" as render
+import "core:vec3"
+import "core:quat" as quat
+import "core:physics/rigid_actor" as rigid
+import "core:ui/module"
+import "core:ui/uisystem"
+import "core:ui/document"
+import "core:ui/element"
+import "std:math" as math
+
+comptime PI: f32 = 3.141592653589793;
+comptime SWING_CONTACT: f32 = 0.36;
+comptime SWING_DURATION: f32 = 0.84;
+comptime LEVEL_COUNT: i32 = 4;
+comptime MAX_OLD_ENTITIES: i32 = 8192;
+
+fn levelPath(i: i32): []const u8 {
+    match i {
+        case 0: return "minigolf/minigolf.unv";
+        case 1: return "minigolf/level_windmill_ridge.unv";
+        case 2: return "minigolf/level_rolling_hills.unv";
+        case 3: return "minigolf/level_twin_mills.unv";
+        case: return "minigolf/minigolf.unv";
+    }
+}
+
+fn levelName(i: i32): []const u8 {
+    match i {
+        case 0: return "Practice green";
+        case 1: return "Windmill Ridge";
+        case 2: return "Rolling Hills";
+        case 3: return "Twin Mills";
+        case: return "Mini golf";
+    }
+}
+
+fn levelIndex(path: []const u8): i32 {
+    for i in 0 .. LEVEL_COUNT {
+        if path == levelPath(i) { return i; }
+    }
+    return -1;
+}
+
+fn hudText(w: World, id: []const u8, text: []const u8): void {
+    const ui = w.ui() else return;
+    if not ui.isReady() { return; }
+    if const e = ui.getDocument().getElementByID(id) { e.setText(text); }
+}
+
+fn show(w: World, id: []const u8, visible: bool): void {
+    const ui = w.ui() else return;
+    if not ui.isReady() { return; }
+    if const e = ui.getDocument().getElementByID(id) { e.setVisible(visible); }
+}
+
+fn setNumber(w: World, id: []const u8, prefix: []const u8, n: i32): void {
+    var buffer: [64]u8 = undefined;
+    var count: isize = 0;
+    for c in prefix { buffer[count] = c; count += 1; }
+    var digits: [16]u8 = undefined;
+    var length: isize = 0;
+    var value = n;
+    while true {
+        digits[length] = ('0' as i32 + value % 10) as u8;
+        length += 1;
+        value /= 10;
+        if value == 0 { break; }
+    }
+    while length > 0 { length -= 1; buffer[count] = digits[length]; count += 1; }
+    hudText(w, id, buffer[:count]);
+}
+
+fn createGolfCamera(w: World): Entity {
+    const e = w.createEntity();
+    e.setName("Golf overview camera");
+    e.setPosition({0, 7, -7});
+    e.setRotation(quat.makeQuatFromYaw(PI) * quat.makeQuatFromPitch(0.7));
+    const camera = e.createCamera() else panic("Missing renderer camera");
+    camera.setIsOrtho(false);
+    return e;
+}
+
+fn showPower(w: World, power: f32): void {
+    var bar: [10]u8 = undefined;
+    const filled = (power * 2.5) as i32;
+    for i in 0 .. 10 { bar[i] = i < filled ? '#' : '-'; }
+    hudText(w, "power_bar", bar[:]);
+    setNumber(w, "power_value", "Power: ", (power * 25) as i32);
+}
+
+fn marker(w: World): Entity {
+    const e = w.createEntity();
+    const m = e.createModelInstance() else panic("Missing renderer");
+    m.setPath("minigolf/models/ball_red.fbx");
+    m.setEnabled(false);
+    e.setScale({0.28, 0.28, 0.28});
+    return e;
+}
+
+fn clubRoll(angle: f32): quat.Quat {
+    const half = angle * 0.5;
+    return {0, 0, math.sin(half), math.cos(half)};
+}
+
+fn createGolfClub(w: World): Entity {
+    const e = w.createEntity();
+    e.setName("Golf club");
+    const model = e.createModelInstance() else panic("Missing renderer");
+    model.setPath("minigolf/models/club_blue.fbx");
+    model.setEnabled(false);
+    e.setScale({0.7, 0.7, 0.7});
+    return e;
+}
+
+fn setMarkerVisible(e: Entity, visible: bool): void {
+    if const model = e.modelInstance() { model.setEnabled(visible); }
+}
+
+fn previewPoint(e: Entity, start: DVec3, dx: f32, dz: f32, power: f32, t: f32): void {
+    const x = (start.x as f32) + dx * power * 2 * t;
+    const y = (start.y as f32) + power * 0.6 * t - 4.905 * t * t;
+    const z = (start.z as f32) + dz * power * 2 * t;
+    e.setPosition({x as f64, y as f64, z as f64});
+}
+
+fn main(engine: Engine, input: inp.InputSystem, w: World): void {
+    const path = w.getPartitionName(w.getPartitionHandle(0));
+    var level = levelIndex(path);
+    var ball_name: []const u8 = "Golf ball";
+    var flag_name: []const u8 = "Golf flag";
+    if path == "minigolf/level2.unv" { ball_name = "L2 Ball"; flag_name = "L2 Flag"; }
+    if path == "minigolf/level3.unv" { ball_name = "L3 Ball"; flag_name = "L3 Flag"; }
+    var cam = createGolfCamera(w);
+    var camera = cam.camera() else panic("Missing camera component");
+    const renderer = render.renderer(w) else panic("Missing renderer");
+    render.setActiveCamera(renderer, cam);
+    var ball = w.findByName(ball_name) else panic("Missing golf ball");
+    var actor = rigid.rigidActor(ball) else panic("Missing golf ball physics");
+    var flag = w.findByName(flag_name) else panic("Missing golf flag");
+    var club = createGolfClub(w);
+    var aim_dot_1 = marker(w);
+    var aim_dot_2 = marker(w);
+    var aim_dot_3 = marker(w);
+    var aim_dot_4 = marker(w);
+    var aim_dot_5 = marker(w);
+    var aim_dot_6 = marker(w);
+    var aim_dot_7 = marker(w);
+    var aim_dot_8 = marker(w);
+    if const ui = w.ui() { ui.load("minigolf/minigolf.ui"); ui.getSystem().enableCursor(false); }
+
+    var shot_dir_x: f32 = 0;
+    var shot_dir_z: f32 = 1;
+    var power: f32 = 0;
+    var aiming = false;
+    var swing_time: f32 = -1;
+    var swing_power: f32 = 0;
+    var swing_yaw: f32 = PI;
+    var swing_ball_pos = ball.getPosition();
+    var camera_distance: f32 = 2;
+    var camera_yaw: f32 = PI;
+    var camera_pitch: f32 = 0.45;
+    var camera_dragging = false;
+    var strokes: i32 = 0;
+    var in_cup_time: f32 = 0;
+    var settling_time: f32 = 0;
+    var won = false;
+    var request: ?LoadRequest = null;
+    var old_entities: [MAX_OLD_ENTITIES]bool = undefined;
+    var next_level: i32 = 0;
+    while true {
+        const dt: f32 = yield;
+        if const r = request {
+            match r.getStatus() {
+                case .SUCCESS:
+                    // World.load is additive. Remove only the entities that existed before loading.
+                    for i in 0 .. MAX_OLD_ENTITIES {
+                        if old_entities[i] { w.destroyEntity(Entity{i, w.world}); }
+                    }
+                    r.destroy();
+                    request = null;
+                    level = next_level;
+                    cam = createGolfCamera(w);
+                    const next_camera = cam.camera() else panic("Could not create golf camera");
+                    camera = next_camera;
+                    render.setActiveCamera(renderer, cam);
+                    const next_ball = w.findByName("Golf ball") else panic("Loaded course has no ball");
+                    ball = next_ball;
+                    const next_actor = rigid.rigidActor(ball) else panic("Loaded ball has no physics");
+                    actor = next_actor;
+                    const next_flag = w.findByName("Golf flag") else panic("Loaded course has no flag");
+                    flag = next_flag;
+                    club = createGolfClub(w);
+                    aim_dot_1 = marker(w); aim_dot_2 = marker(w); aim_dot_3 = marker(w); aim_dot_4 = marker(w);
+                    aim_dot_5 = marker(w); aim_dot_6 = marker(w); aim_dot_7 = marker(w); aim_dot_8 = marker(w);
+                    strokes = 0; power = 0; aiming = false;
+                    swing_time = -1; swing_power = 0; swing_yaw = PI; swing_ball_pos = ball.getPosition();
+                    won = false; in_cup_time = 0; settling_time = 0;
+                    camera_yaw = PI; camera_pitch = 0.45; camera_distance = 2; camera_dragging = false;
+                    if const ui = w.ui() { ui.load("minigolf/minigolf.ui"); ui.getSystem().enableCursor(false); }
+                case .FAIL:
+                    r.destroy(); request = null;
+                    show(w, "loading", false);
+                    show(w, "error", true);
+                    show(w, "win", true);
+                case: 
+            }
+            if request != null { continue; }
+        }
+        // Strike at the middle of the club swing, not on mouse release.
+        if swing_time >= 0 {
+            const previous = swing_time;
+            swing_time += dt;
+            if previous < SWING_CONTACT and swing_time >= SWING_CONTACT {
+                const dx = -math.sin(swing_yaw);
+                const dz = -math.cos(swing_yaw);
+                rigid.applyImpulse(actor, {dx * swing_power, 0.3 * swing_power, dz * swing_power});
+                strokes += 1;
+                settling_time = 0;
+            }
+            if swing_time >= SWING_DURATION { swing_time = -1; }
+        }
+        // A shot is available only after the ball has stayed nearly still.
+        if not won {
+            const velocity = rigid.getVelocity(actor);
+            const horizontal_speed_sq = velocity.x * velocity.x + velocity.z * velocity.z;
+            if strokes > 0 and horizontal_speed_sq > 0.0001 {
+                rigid.applyForce(actor, {-velocity.x * 0.35, 0, -velocity.z * 0.35});
+            }
+            if horizontal_speed_sq < 0.12 * 0.12 and velocity.y > -0.12 and velocity.y < 0.12 {
+                settling_time += dt;
+                if strokes > 0 and settling_time > 0.3 { rigid.putToSleep(actor); }
+            } else { settling_time = 0; }
+        }
+        const ball_ready = not won and swing_time < 0 and settling_time > 0.3 and rigid.getSpeed(actor) < 0.15;
+        if not ball_ready { aiming = false; power = 0; }
+        if won { hudText(w, "shot_hint", "Hole complete"); }
+        else if swing_time >= 0 { hudText(w, "shot_hint", "Swinging..."); }
+        else if not ball_ready { hudText(w, "shot_hint", "Wait for the ball to stop"); }
+        else if aiming { hudText(w, "shot_hint", "Pull down for power, then release"); }
+        else { hudText(w, "shot_hint", "Right-drag to aim; left-drag down to shoot"); }
+        hudText(w, "course", levelName(level));
+        setNumber(w, "strokes", "Strokes: ", strokes);
+        showPower(w, power);
+        var go_next = false;
+        if const ui = w.ui() {
+            if ui.isReady() {
+                for event in ui.getDocument().getEvents() {
+                    if event.action == "next" and won { go_next = true; }
+                }
+            }
+        }
+        for event in inp.getEvents(input) {
+            if event is inp.MouseWheelEvent {
+                if event.device_type == .MOUSE {
+                    camera_distance -= event.y * 0.5;
+                    if camera_distance < 2 { camera_distance = 2; }
+                    if camera_distance > 12 { camera_distance = 12; }
+                }
+            }
+            if event is inp.AxisEvent {
+                if event.device_type == .MOUSE and camera_dragging and not won {
+                    const width = camera.getScreenWidth();
+                    const height = camera.getScreenHeight();
+                    if width > 0 and height > 0 {
+                        camera_yaw -= event.x * (2 * PI / width);
+                        camera_pitch += event.y * (PI / height);
+                        if camera_pitch < 0.2 { camera_pitch = 0.2; }
+                        if camera_pitch > 1.5 { camera_pitch = 1.5; }
+                    }
+                }
+                if event.device_type == .MOUSE and aiming and ball_ready {
+                    // Raw relative motion works even while the hidden cursor is clipped.
+                    power += event.y / 30;
+                    if power < 0 { power = 0; }
+                    if power > 4 { power = 4; }
+                }
+            }
+            if event is inp.ButtonEvent {
+                if event.device_type == .MOUSE and event.key_id == 1 { camera_dragging = event.down and not won and not aiming; }
+                if event.device_type == .MOUSE and event.key_id == 0 {
+                    if event.down {
+                        if ball_ready {
+                            aiming = true;
+                            camera_dragging = false;
+                            power = 0;
+                        }
+                    } else if aiming {
+                        if ball_ready and power >= 0.2 {
+                            swing_yaw = camera_yaw;
+                            swing_power = power;
+                            swing_ball_pos = ball.getPosition();
+                            swing_time = 0;
+                            settling_time = 0;
+                        }
+                        aiming = false;
+                        power = 0;
+                    }
+                }
+            }
+        }
+        if go_next and request == null {
+            next_level = level < 0 ? 0 : (level + 1) % LEVEL_COUNT;
+            for i in 0 .. MAX_OLD_ENTITIES { old_entities[i] = w.hasEntity(Entity{i, w.world}); }
+            request = w.load(levelPath(next_level));
+            show(w, "win", false); show(w, "error", false); show(w, "loading", true);
+            continue;
+        }
+        const bp = ball.getPosition();
+        const club_visible = not won and (ball_ready or swing_time >= 0);
+        if const club_model = club.modelInstance() { club_model.setEnabled(club_visible); }
+        if club_visible {
+            const aim_yaw = swing_time >= 0 ? swing_yaw : camera_yaw;
+            // The club's face is perpendicular to its local forward axis.
+            const club_yaw = aim_yaw + PI * 0.5;
+            var swing_angle: f32 = aiming ? -0.85 : -0.15;
+            if swing_time >= 0 {
+                if swing_time < SWING_CONTACT { swing_angle = -0.85 + swing_time * (0.85 / SWING_CONTACT); }
+                else { swing_angle = (swing_time - SWING_CONTACT) * (1.1 / (SWING_DURATION - SWING_CONTACT)); }
+            }
+            const target = swing_time >= 0 ? swing_ball_pos : bp;
+            const forward_x = -math.sin(aim_yaw);
+            const forward_z = -math.cos(aim_yaw);
+            const right_x = math.cos(aim_yaw);
+            const right_z = -math.sin(aim_yaw);
+            // The grip pivot is 0.10m above the FBX origin at this scale.
+            // Keep that point fixed during the swing; the head (0.515m below
+            // origin, 0.026m sideways) then travels through the ball at contact.
+            const grip_y: f32 = 0.10;
+            const head_y: f32 = -0.515;
+            const head_z: f32 = -0.026;
+            const grip_x_rotated = -math.sin(swing_angle) * grip_y;
+            const grip_y_rotated = math.cos(swing_angle) * grip_y;
+            const grip_forward: f32 = -0.05;
+            const grip_side: f32 = 0.02 - head_z;
+            club.setPosition({target.x + (forward_x * (grip_forward - grip_x_rotated) + right_x * grip_side) as f64,
+                              target.y + (grip_y - head_y - grip_y_rotated) as f64,
+                              target.z + (forward_z * (grip_forward - grip_x_rotated) + right_z * grip_side) as f64});
+            club.setRotation(quat.makeQuatFromYaw(club_yaw) * clubRoll(swing_angle));
+        }
+        const goal = flag.getPosition();
+        if not won and strokes > 0 {
+            const dx = (bp.x - goal.x) as f32;
+            const dz = (bp.z - goal.z) as f32;
+            const dy = (bp.y - goal.y) as f32;
+            // Cup opening is roughly 0.13m wide. Require the ball to settle below the green surface.
+            if dx * dx + dz * dz < 0.05 * 0.05 and dy > -0.05 and dy < 0.095 and rigid.getSpeed(actor) < 0.4 {
+                in_cup_time += dt;
+            } else { in_cup_time = 0; }
+            if in_cup_time > 0.35 {
+                won = true; aiming = false; power = 0;
+                rigid.putToSleep(actor);
+                show(w, "win", true);
+                setNumber(w, "result", "Completed in ", strokes);
+                if level == LEVEL_COUNT - 1 { hudText(w, "next_label", "Play again"); }
+                if const ui = w.ui() { ui.getSystem().enableCursor(true); }
+            }
+        }
+        const horizontal = math.cos(camera_pitch) * camera_distance;
+        cam.setPosition({bp.x + (math.sin(camera_yaw) * horizontal) as f64, bp.y + (math.sin(camera_pitch) * camera_distance) as f64, bp.z + (math.cos(camera_yaw) * horizontal) as f64});
+        cam.setRotation(quat.makeQuatFromYaw(camera_yaw) * quat.makeQuatFromPitch(camera_pitch));
+        shot_dir_x = -math.sin(camera_yaw);
+        shot_dir_z = -math.cos(camera_yaw);
+        const norm = math.sqrt(shot_dir_x * shot_dir_x + shot_dir_z * shot_dir_z);
+        const show_preview = aiming and ball_ready and power >= 0.2;
+        setMarkerVisible(aim_dot_1, show_preview); setMarkerVisible(aim_dot_2, show_preview);
+        setMarkerVisible(aim_dot_3, show_preview); setMarkerVisible(aim_dot_4, show_preview);
+        setMarkerVisible(aim_dot_5, show_preview); setMarkerVisible(aim_dot_6, show_preview);
+        setMarkerVisible(aim_dot_7, show_preview); setMarkerVisible(aim_dot_8, show_preview);
+        if show_preview and norm > 0.01 {
+            const d_x = shot_dir_x / norm;
+            const d_z = shot_dir_z / norm;
+            const flight_time = power * 0.12;
+            previewPoint(aim_dot_1, bp, d_x, d_z, power, flight_time * 0.125);
+            previewPoint(aim_dot_2, bp, d_x, d_z, power, flight_time * 0.25);
+            previewPoint(aim_dot_3, bp, d_x, d_z, power, flight_time * 0.375);
+            previewPoint(aim_dot_4, bp, d_x, d_z, power, flight_time * 0.5);
+            previewPoint(aim_dot_5, bp, d_x, d_z, power, flight_time * 0.625);
+            previewPoint(aim_dot_6, bp, d_x, d_z, power, flight_time * 0.75);
+            previewPoint(aim_dot_7, bp, d_x, d_z, power, flight_time * 0.875);
+            previewPoint(aim_dot_8, bp, d_x, d_z, power, flight_time);
+        }
+    }
+}

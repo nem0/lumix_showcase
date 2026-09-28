@@ -1,0 +1,26 @@
+[style] {
+    .next {
+        bg-color: #288465;
+        padding: 0.35em;
+        width: 11em;
+        align: center;
+    }
+    .next:hover { bg-color: #3caa81; }
+}
+[box width=100% height=100% font="ui/font/Kenney Future.ttf" font-size=28 color=#ffffff] {
+    [box position=absolute left=16 top=16 bg-color=#182b31dd padding=12] {
+        [box] { [span $course text="Mini Golf"] }
+        [box] { [span $strokes text="Strokes: 0"] }
+        [box] { [span $power_value text="Power: 0"] [span text="%"] }
+        [box color=#56e9ad] { [span $power_bar text="----------"] }
+        [box font-size=20] { [span $shot_hint text="Wait for the ball to stop"] }
+        [box font-size=18] { Right-drag to aim the camera. Hold LMB and move down/up to change power; release to shoot. Scroll to zoom. }
+    }
+    [box $win visible=false position=absolute left=50% pivot-x=50% top=50% pivot-y=50% width=520 height=230 bg-color=#182b31ee align=center padding=20] {
+        [box font-size=42] { HOLE COMPLETE! }
+        [box] { [span $result text="Nice shot!"] }
+        [box on-click=next .next] { [span $next_label text="Next course"] }
+    }
+    [box $loading visible=false position=absolute left=50% pivot-x=50% top=50% pivot-y=50% width=380 height=70 bg-color=#182b31ee align=center padding=16] { Loading course... }
+    [box $error visible=false position=absolute left=50% pivot-x=50% top=60% pivot-y=50% width=550 height=70 bg-color=#8b3030ee align=center padding=12] { Could not load the next course. }
+}

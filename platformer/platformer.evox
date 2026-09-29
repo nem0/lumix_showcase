@@ -449,9 +449,8 @@ fn processTriggers(world : World) : void {
 fn handleEvents(input : InputSystem, world : World) : void {
 	for event in input.getEvents() {
 		match event {
-			case ButtonEvent: {
-				if event.device_type == .KEYBOARD {
-					match event.key_id as Keycode {
+			case KeyboardEvent: {
+					match event.keycode {
 						case .A: go_left = event.down;
 						case .D: go_right = event.down;
 						case .SHIFT: slow = event.down;
@@ -473,7 +472,6 @@ fn handleEvents(input : InputSystem, world : World) : void {
 						}
 						case:
 					}
-				}
 			}
 			case:
 		}

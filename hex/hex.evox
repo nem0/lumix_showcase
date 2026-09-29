@@ -592,25 +592,24 @@ fn cutTreeAtCursor(world: World) : void {
 fn updateCamera(input_system: InputSystem, world: World, dt: f32) : void {
 	for event in input_system.getEvents() {
 		match event {
-			case ButtonEvent: {
-				if event.device_type == .KEYBOARD {
-					match event.key_id as Keycode {
-						case .W: move_forward = event.down;
-						case .S: move_back = event.down;
-						case .A: move_left = event.down;
-						case .D: move_right = event.down;
-						case .Q: zoom_in = event.down;
-						case .E: zoom_out = event.down;
-						case .ESCAPE: if event.down { selected_building = ""; cutting_mode = false; destroyPreview(); }
-						case:
-					}
+			case KeyboardEvent: {
+				match event.keycode {
+					case .W: move_forward = event.down;
+					case .S: move_back = event.down;
+					case .A: move_left = event.down;
+					case .D: move_right = event.down;
+					case .Q: zoom_in = event.down;
+					case .E: zoom_out = event.down;
+					case .ESCAPE: if event.down { selected_building = ""; cutting_mode = false; destroyPreview(); }
+					case:
 				}
-				// Mouse button ids are zero-based in InputSystem: 0=left, 1=right.
-				else if event.device_type == .MOUSE and event.key_id == 0 and event.down {
+			}
+			case MouseButtonEvent: {
+				if event.button == .LEFT and event.down {
 					if cutting_mode { cutTreeAtCursor(world); }
 					else if selected_building != "" { placeBuildingAtCursor(world); }
 				}
-				else if event.device_type == .MOUSE and event.key_id == 1 {
+				else if event.button == .RIGHT {
 					panning = event.down;
 					last_mouse_x = mouse_x;
 					last_mouse_y = mouse_y;

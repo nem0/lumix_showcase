@@ -877,19 +877,12 @@ fn onInput(e: InputEvent): void {
                 e.x_abs, e.y_abs
             };
         }
-        case ButtonEvent: if e.device_type == .MOUSE and e.key_id == 0 and e.down {
+        case MouseButtonEvent: if e.button == .LEFT and e.down {
             click = true;
         }
-        if e.device_type == .KEYBOARD and e.down {
-            if e.key_id == 49 {
-                selected = 0;
-            } else if e.key_id == 50 {
-                selected = 1;
-            } else if e.key_id == 51 {
-                selected = 2;
-            } else if e.key_id == 52 {
-                selected = 3;
-            }
+        case KeyboardEvent: if e.down {
+            const key = e.keycode as i32;
+            if key >= 49 and key <= 52 { selected = key - 49; }
         }
         case:
     }

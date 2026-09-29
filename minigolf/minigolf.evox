@@ -282,9 +282,9 @@ fn main(engine: Engine, input: inp.InputSystem, w: World): void {
                     if power > 4 { power = 4; }
                 }
             }
-            if event is inp.ButtonEvent {
-                if event.device_type == .MOUSE and event.key_id == 1 { camera_dragging = event.down and not won and not aiming; }
-                if event.device_type == .MOUSE and event.key_id == 0 {
+            if event is inp.MouseButtonEvent {
+                if event.button == .RIGHT { camera_dragging = event.down and not won and not aiming; }
+                if event.button == .LEFT {
                     if event.down {
                         if ball_ready {
                             aiming = true;

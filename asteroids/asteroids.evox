@@ -482,9 +482,8 @@ fn resetGame(): void {
 
 fn onInputEvent(event: InputEvent): void {
 	match event {
-		case ButtonEvent:
-		if event.device_type == .KEYBOARD {
-			match event.key_id as Keycode {
+		case KeyboardEvent:
+			match event.keycode {
 				case .W: controls.w = event.down;
 				case .A: controls.a = event.down;
 				case .S: controls.s = event.down;
@@ -496,9 +495,10 @@ fn onInputEvent(event: InputEvent): void {
 				}
 				case:
 			}
-		} else if event.device_type == .GAMEPAD and event.key_id == 4 and event.down {
-			controls.pad_restart = true;
-		}
+		case ButtonEvent:
+			if event.device_type == .GAMEPAD and event.key_id == 4 and event.down {
+				controls.pad_restart = true;
+			}
 		case AxisEvent:
 		if event.device_type == .GAMEPAD {
 			match event.axis {

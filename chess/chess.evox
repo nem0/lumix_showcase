@@ -945,8 +945,8 @@ fn onInputEvent(input_event: InputEvent): void {
 			};
 			mouse_pos_valid = true;
 		}
-		case ButtonEvent:
-		if input_event.device_type == .MOUSE {
+		case MouseButtonEvent:
+		if input_event.button == .LEFT {
 			if anyAnimating() {
 				return;
 			}
